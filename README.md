@@ -2,12 +2,15 @@
 
 A complete Cloudflare Pages + Functions + D1 system for student, employee/client, and visitor registration, assessment scoring, QR identification, and records management.
 
-## Architecture
+## Architecture (Worker + static assets)
 
-- **Static frontend**: `public/` (served by Cloudflare Pages)
-- **API**: `functions/api/[[path]].js` (Pages Function) that imports the handler from `worker/src/index.js`
+Because the Cloudflare dashboard requires a Deploy command, the project is configured as a **Cloudflare Worker with static assets**:
+
+- **Entry point**: `worker/src/index.js` (handles `/api/*` and serves everything else from assets)
+- **Static files**: `public/` directory bound as the `ASSETS` binding
 - **Database**: Cloudflare D1 (binding name: `DB`)
 - **Auth**: Single admin account via environment secrets + signed HttpOnly cookie session
+- Deploy command that works: `npx wrangler deploy`
 
 ## Why the original build failed
 
