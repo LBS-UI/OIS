@@ -34,3 +34,12 @@ CREATE TABLE IF NOT EXISTS scan_events (
   FOREIGN KEY(record_id) REFERENCES records(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_scan_events_record_id ON scan_events(record_id);
+
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);

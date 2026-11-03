@@ -127,3 +127,34 @@ You will still need to supply the secrets locally (or use `.dev.vars`).
 - Scan events are logged but do not automatically mark attendance unless you extend the workflow.
 
 Do not store real student data until backups, access control, and retention policies are reviewed.
+
+
+## Multiple staff accounts
+
+The primary admin (the one set in `ADMIN_USERNAME` / `ADMIN_PASSWORD`) can create additional staff accounts.
+
+After logging in as the primary admin, send a POST request to `/api/users` with:
+
+```json
+{"username":"teacher1","password":"a-strong-password-here"}
+```
+
+Or use the browser console while logged in:
+
+```javascript
+fetch("/api/users", {
+  method: "POST",
+  headers: {"Content-Type":"application/json"},
+  credentials: "same-origin",
+  body: JSON.stringify({username:"teacher1", password:"StrongPass123!"})
+}).then(r => r.json()).then(console.log)
+```
+
+The new account can then log in normally. Passwords are stored hashed in the `users` table.
+
+You still need to apply the updated schema so the `users` table exists:
+
+```bash
+npx wrangler d1 execute nextgen-smart-classroom --remote --file=worker/schema.sql
+```
+

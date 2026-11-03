@@ -18,6 +18,25 @@ function cleanScore(v){if(v===null||v===undefined||v==='')return null;const n=Nu
 function normalize(body){const category=['student','employee','visitor'].includes(body.category)?body.category:null;if(!category)throw new Error('Choose a valid registration category.');const fullName=cleanString(body.fullName,160);const pcNumber=cleanString(body.pcNumber,40);if(!fullName)throw new Error('Full name is required.');if(category==='student'&&!pcNumber)throw new Error('PC Number is required for student records.');const preTest=cleanScore(body.preTest),postTest=cleanScore(body.postTest);if(Number.isNaN(preTest)||Number.isNaN(postTest))throw new Error('Scores must be non-negative numbers.');return {category,pcNumber,fullName,grade:category==='student'?cleanString(body.grade,80):null,section:category==='student'?cleanString(body.section,100):null,school:category==='student'?cleanString(body.school,160):null,office:category!=='student'?cleanString(body.office,160):null,position:category!=='student'?cleanString(body.position,120):null,preTest,postTest,feedback:cleanString(body.feedback,2000)};}
 async function bodyJson(request){try{return await request.json();}catch{throw new Error('Request body must be valid JSON.');}}
 async function requireUser(request,env){if(!env.SESSION_SECRET)return {error:'SESSION_SECRET is not configured.'};const user=await readSession(request,env.SESSION_SECRET);return user?{user}:{error:'Authentication required.'};}
+
+async function hashPassword(password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey("raw", encoder.encode(password), {name:"PBKDF2"}, false, ["deriveBits"]);
+  const hash = await crypto.subtle.deriveBits({name:"PBKDF2", salt, iterations:100000, hash:"SHA-256"}, key, 256);
+  const saltB64 = btoa(String.fromCharCode(...salt));
+  const hashB64 = btoa(String.fromCharCode(...new Uint8Array(hash)));
+  return saltB64 + ":" + hashB64;
+}
+async function verifyPassword(password, stored) {
+  const [saltB64, hashB64] = stored.split(":");
+  if (!saltB64 || !hashB64) return false;
+  const salt = Uint8Array.from(atob(saltB64), c => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey("raw", encoder.encode(password), {name:"PBKDF2"}, false, ["deriveBits"]);
+  const hash = await crypto.subtle.deriveBits({name:"PBKDF2", salt, iterations:100000, hash:"SHA-256"}, key, 256);
+  const computed = btoa(String.fromCharCode(...new Uint8Array(hash)));
+  return computed === hashB64;
+}
+
 export default { async fetch(request, env) {
   const url=new URL(request.url);const path=url.pathname;const method=request.method.toUpperCase();
   if(method==='OPTIONS')return new Response(null,{status:204,headers:{'Access-Control-Allow-Methods':'GET,POST,PATCH,DELETE,OPTIONS','Access-Control-Allow-Headers':'Content-Type','Access-Control-Max-Age':'86400'} });
@@ -29,13 +48,42 @@ export default { async fetch(request, env) {
   if(!env.DB)return fail('D1 binding DB is not configured.',503);
   if(path==='/api/health'&&method==='GET')return json({ok:true,service:'nextgen-smart-classroom-api',database:!!env.DB});
   if(path==='/api/login'&&method==='POST'){
-    if(!env.ADMIN_USERNAME||!env.ADMIN_PASSWORD||!env.SESSION_SECRET)return fail('Admin credentials or session secret are not configured.',503);
+    if(!env.SESSION_SECRET)return fail('SESSION_SECRET is not configured.',503);
     let body;try{body=await bodyJson(request);}catch(e){return fail(e.message);}
-    const username=String(body.username||'');const password=String(body.password||'');
-    if(username!==env.ADMIN_USERNAME||password!==env.ADMIN_PASSWORD)return fail('Incorrect username or password.',401);
-    const token=await makeSession(username,env.SESSION_SECRET);return json({ok:true,user:{username}},200,{'Set-Cookie':cookie(token)});
+    const username=String(body.username||'').trim();const password=String(body.password||'');
+    if(!username||!password)return fail('Username and password are required.');
+    // Check environment admin first
+    if(env.ADMIN_USERNAME && env.ADMIN_PASSWORD && username===env.ADMIN_USERNAME && password===env.ADMIN_PASSWORD){
+      const token=await makeSession(username,env.SESSION_SECRET);
+      return json({ok:true,user:{username}},200,{'Set-Cookie':cookie(token)});
+    }
+    // Check database users
+    const row = await env.DB.prepare('SELECT password_hash FROM users WHERE username=?').bind(username).first();
+    if(!row || !(await verifyPassword(password, row.password_hash))) return fail('Incorrect username or password.',401);
+    const token=await makeSession(username,env.SESSION_SECRET);
+    return json({ok:true,user:{username}},200,{'Set-Cookie':cookie(token)});
   }
   if(path==='/api/logout'&&method==='POST')return json({ok:true},200,{'Set-Cookie':cookie('',0)});
+
+  if(path==='/api/users'&&method==='POST'){
+    const auth=await requireUser(request,env);
+    if(auth.error)return fail(auth.error,401);
+    // Only the environment admin can create users for now
+    if(auth.user !== env.ADMIN_USERNAME) return fail('Only the primary admin can create accounts.',403);
+    let body;try{body=await bodyJson(request);}catch(e){return fail(e.message);}
+    const username=String(body.username||'').trim();
+    const password=String(body.password||'');
+    if(!username || username.length < 3) return fail('Username must be at least 3 characters.');
+    if(!password || password.length < 8) return fail('Password must be at least 8 characters.');
+    const id=uuid(); const hash=await hashPassword(password); const ts=now();
+    try{
+      await env.DB.prepare('INSERT INTO users (id,username,password_hash,created_at,created_by) VALUES (?,?,?,?,?)').bind(id,username,hash,ts,auth.user).run();
+      return json({ok:true,username},201);
+    }catch(e){
+      if(String(e.message).includes('UNIQUE')) return fail('That username already exists.',409);
+      return fail('Could not create the account.',500);
+    }
+  }
   const auth=await requireUser(request,env);if(auth.error)return fail(auth.error,auth.error==='Authentication required.'?401:503);const user=auth.user;
   if(path==='/api/me'&&method==='GET')return json({ok:true,user:{username:user}});
   if(path==='/api/records'&&method==='GET'){
