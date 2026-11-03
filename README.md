@@ -1,109 +1,126 @@
-# NextGen Smart Classroom — Online Upgrade Starter
+# NextGen Smart Classroom — Online Registration & Records System
 
-A redesigned, responsive version of the uploaded offline registration / QR project, prepared for Cloudflare Pages Functions + D1.
+A complete Cloudflare Pages + Functions + D1 system for student, employee/client, and visitor registration, assessment scoring, QR identification, and records management.
 
-## Included
+## Architecture
 
-- Responsive dashboard and registration forms for Student, Employee / Client, and Visitor
-- Student PC Number, full name, grade, section, school, assessment scores, and feedback
-- Employee/client office and position fields, plus optional assessment scores
-- Visitor office and position fields
-- Staff login using Cloudflare Pages secrets
-- D1-backed record creation, listing, editing, QR-token lookup, and scan-event logging
-- CSV export built in; Excel (.xlsx) and PDF exports use CDN-hosted libraries
-- QR codes contain a random token only, not a participant's personal details
-- SQL schema and Cloudflare configuration included
+- **Static frontend**: `public/` (served by Cloudflare Pages)
+- **API**: `functions/api/[[path]].js` (Pages Function) that imports the handler from `worker/src/index.js`
+- **Database**: Cloudflare D1 (binding name: `DB`)
+- **Auth**: Single admin account via environment secrets + signed HttpOnly cookie session
 
-## Important limitations before real deployment
+## Why the original build failed
 
-This is a deployable starter, not a live deployed service. It has not been connected to your Cloudflare account or tested against a provisioned D1 database. Do not upload real participant data until you have configured secrets, reviewed access policies with the classroom owner, and tested backups/recovery.
+The Cloudflare project was configured with **Deploy command: `npx wrangler deploy`**.  
+That command expects a **Workers** project with a `main` entry-point script (or assets configuration).  
 
-The starter uses one administrator account supplied as Cloudflare secrets. It does not yet include multi-user staff management, password reset, rate limiting, CSV import, or an in-browser camera scanner. QR lookup accepts the scanned token or pasted QR content. A camera scanner can be added after confirming the target device/browser.
+This repository is set up as a **Pages** project (`pages_build_output_dir = "./public"` in the root `wrangler.toml`). There is no root Worker entry point, so Wrangler reported:
 
-## Deploy with Cloudflare Pages + D1
+> Missing entry-point to Worker script or to assets directory.
 
-### 1. Create the D1 database
+**Correct approach**: Treat it as a Cloudflare **Pages** project. Leave the Build command empty and set the Build output directory to `public`. Do **not** use `npx wrangler deploy` as the deploy command for the Pages Git integration.
 
-From the project root, install/use Wrangler and run:
+## Exact Cloudflare Pages settings
 
-```bash
-npx wrangler d1 create nextgen-smart-classroom
-```
+- Framework preset: **None**
+- Build command: *(leave empty)*
+- Build output directory: **public**
+- Root directory: **/** (repository root)
 
-Copy the returned database ID into the root `wrangler.toml`, replacing `REPLACE_WITH_YOUR_D1_DATABASE_ID`.
+After connecting the GitHub repository, Pages will automatically deploy the contents of `public/` and pick up the `functions/` directory.
 
-Apply the schema:
+## Database
+
+Database ID (already filled in the `wrangler.toml` files):  
+`a7b82648-3af2-4a67-8125-c7edadedada8`
+
+### Apply the schema (run once)
 
 ```bash
 npx wrangler d1 execute nextgen-smart-classroom --remote --file=worker/schema.sql
 ```
 
-### 2. Create a Pages project
+(Or use the Cloudflare dashboard SQL editor and paste the contents of `worker/schema.sql`.)
 
-Push this folder to a private GitHub repository (recommended while it is under development), then create a Cloudflare Pages project connected to that repository.
+## Required secrets / environment variables
 
-- Build command: leave empty
-- Build output directory: `public`
-- Keep `functions/`, `worker/`, and `wrangler.toml` at the repository root
+In the Cloudflare Pages project → Settings → Environment variables (or Secrets):
 
-The `functions/api/[[path]].js` file routes `/api/*` requests to the included API handler.
+| Name              | Purpose                                      |
+|-------------------|----------------------------------------------|
+| `ADMIN_USERNAME`  | Staff login username                         |
+| `ADMIN_PASSWORD`  | Staff login password (long & unique)         |
+| `SESSION_SECRET`  | Random string ≥ 32 characters for signing sessions |
 
-### 3. Bind D1 to Pages
-
-In Cloudflare Dashboard → Workers & Pages → your Pages project → Settings → Functions → D1 database bindings, add:
-
-- Variable name: `DB`
-- D1 database: `nextgen-smart-classroom`
-
-The root Wrangler configuration also declares this binding for Wrangler-based workflows.
-
-### 4. Add required secrets
-
-In the Pages project settings, add these as **encrypted secrets/environment variables** for both Production and Preview only as appropriate:
-
-- `ADMIN_USERNAME`: a non-obvious staff username
-- `ADMIN_PASSWORD`: a long, unique password (never put it in HTML/JavaScript or Git)
-- `SESSION_SECRET`: a cryptographically random secret of at least 32 characters
-
-Generate a secret locally, for example:
+Generate a strong session secret:
 
 ```bash
 openssl rand -base64 48
 ```
 
-Do not use the example command output as a fixed shared password. Set secrets through Cloudflare's dashboard or Wrangler Pages secret commands, not in source files.
+Set these for Production (and Preview if desired). Never commit them to the repository.
 
-### 5. Deploy and test
+## D1 Binding
 
-Deploy the Pages project. Then verify:
+In the Pages project → Settings → Functions → D1 database bindings:
 
-1. `/api/health` returns service status.
-2. Login rejects incorrect credentials and accepts the configured staff account.
-3. Student records require PC Number and full name.
-4. Employee/client and visitor forms work with their own fields.
-5. Duplicate student PC Numbers are rejected within the same category.
-6. Records persist after refreshing and opening another authorized device.
-7. QR token lookup requires staff authentication.
-8. CSV, Excel, and PDF exports contain the expected columns.
-9. The D1 database can be backed up and restored.
+- Variable name: **DB**
+- D1 database: **nextgen-smart-classroom** (the one matching the ID above)
 
-Add Cloudflare rate limiting or another suitable protection for `/api/login` before production use. Limit staff access to the people authorized by the classroom owner, and define a retention/deletion process for participant data.
+## Features
+
+- Three registration categories (Student, Employee/Client, Visitor)
+- Required field validation (frontend + backend)
+- Duplicate PC Number prevention per category
+- Searchable / filterable records table
+- Edit existing records
+- Delete records (with confirmation)
+- QR codes containing only a random token (no personal data)
+- QR lookup by pasting token or using camera scanner
+- Scan event logging
+- CSV, Excel (.xlsx), and PDF exports
+- Responsive design
+- Secure session cookies (HttpOnly, Secure, SameSite=Strict)
+- Parameterized SQL queries
 
 ## Local development
 
-With Wrangler installed and the D1 binding configured, try:
-
 ```bash
-npx wrangler pages dev public
+npx wrangler pages dev public --d1=DB=nextgen-smart-classroom
 ```
 
-Depending on your local setup, you may need to use the Pages project root and explicitly configure the local D1 database binding. Do not use real student data in local test fixtures.
+You will still need to supply the secrets locally (or use `.dev.vars`).
 
-## Data model
+## Testing checklist
 
-`worker/schema.sql` defines:
+1. `/api/health` returns `{ ok: true }`
+2. Login with wrong credentials fails; correct credentials succeed and set cookie
+3. Create a Student record (PC Number required) → appears in records and has QR
+4. Create Employee and Visitor records
+5. Try duplicate PC Number in same category → rejected
+6. Edit a record → changes persist
+7. Delete a record → removed from list
+8. QR lookup by token works (authenticated)
+9. Camera scan works on a device with camera permission
+10. CSV / Excel / PDF exports contain the current records
+11. Logout clears the session
 
-- `records`: participant and assessment information, QR token, created/updated timestamps, and staff identity
-- `scan_events`: audit entries for staff QR lookups
+## Remaining manual steps
 
-The original upload's student form used Grade and School. The redesign retains those fields and adds Section as a separate field based on the requested online workflow.
+1. Confirm the D1 database `nextgen-smart-classroom` exists and the ID matches.
+2. Run the schema SQL (command above).
+3. Set the three secrets in the Pages project.
+4. Confirm the `DB` binding is attached.
+5. Push this code to the `main` branch of the GitHub repository.
+6. In Cloudflare, ensure the Pages project uses the settings listed above (no `wrangler deploy` command).
+7. Deploy and test with a non-production admin password first.
+
+## Known limitations
+
+- Single administrator account (no multi-user staff management or password reset).
+- No built-in rate limiting (add Cloudflare Rate Limiting rules for `/api/login` in production).
+- Exports are generated client-side from the currently loaded records.
+- Camera scanning depends on browser support and HTTPS.
+- Scan events are logged but do not automatically mark attendance unless you extend the workflow.
+
+Do not store real student data until backups, access control, and retention policies are reviewed.

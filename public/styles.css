@@ -5,3 +5,4 @@
 @media(max-width:420px){.main-area{padding-left:12px;padding-right:12px}.stats-grid{grid-template-columns:1fr 1fr}.stat-card{min-height:125px}.stat-label{position:static;display:block;margin:-3px 0 7px}.stat-icon{margin-bottom:10px}.form-grid{grid-template-columns:1fr}.form-grid .wide{grid-column:auto}.welcome-row h2{font-size:22px}.welcome-row>.btn{max-width:120px}.topbar h1{font-size:17px}.topbar-right .avatar{width:32px;height:32px}.detail-grid{grid-template-columns:1fr 1fr}}
 
 .camera-reader{width:100%;max-width:420px;margin:15px auto 0;overflow:hidden;border-radius:10px}.camera-reader video{border-radius:10px}.camera-reader button{font-size:11px!important}
+.row-actions .danger{color:#c0392b;background:#fdf2f2;border-color:#f5c6c6}

@@ -5,7 +5,7 @@ compatibility_date = "2026-10-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "nextgen-smart-classroom"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "a7b82648-3af2-4a67-8125-c7edadedada8"
 
 [vars]
 # Configure secrets separately with `wrangler secret put`.

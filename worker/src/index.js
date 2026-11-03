@@ -42,7 +42,16 @@ export default { async fetch(request, env) {
     const id=uuid(),qrToken=uuid(),ts=now();try{await env.DB.prepare(`INSERT INTO records (id,qr_token,category,pc_number,full_name,grade,section,school,office,position,pre_test,post_test,feedback,created_at,updated_at,created_by,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(id,qrToken,data.category,data.pcNumber,data.fullName,data.grade,data.section,data.school,data.office,data.position,data.preTest,data.postTest,data.feedback,ts,ts,user,user).run();const r=await env.DB.prepare('SELECT * FROM records WHERE id=?').bind(id).first();return json({record:mapRecord(r)},201);}catch(e){if(String(e.message).includes('UNIQUE'))return fail('That PC Number is already registered in this category.',409);return fail('Could not save the record.',500);}
   }
   const recordMatch=path.match(/^\/api\/records\/([^/]+)$/);
-  if(recordMatch&&method==='PATCH'){
+  
+  if(recordMatch&&method==='DELETE'){
+    const id=decodeURIComponent(recordMatch[1]);
+    try{
+      const result=await env.DB.prepare('DELETE FROM records WHERE id=?').bind(id).run();
+      if(!result.meta.changes)return fail('Record not found.',404);
+      return json({ok:true});
+    }catch(e){return fail('Could not delete the record.',500);}
+  }
+if(recordMatch&&method==='PATCH'){
     const id=decodeURIComponent(recordMatch[1]);let body,data;try{body=await bodyJson(request);data=normalize(body);}catch(e){return fail(e.message);}const ts=now();try{const result=await env.DB.prepare(`UPDATE records SET category=?,pc_number=?,full_name=?,grade=?,section=?,school=?,office=?,position=?,pre_test=?,post_test=?,feedback=?,updated_at=?,updated_by=? WHERE id=?`).bind(data.category,data.pcNumber,data.fullName,data.grade,data.section,data.school,data.office,data.position,data.preTest,data.postTest,data.feedback,ts,user,id).run();if(!result.meta.changes)return fail('Record not found.',404);const r=await env.DB.prepare('SELECT * FROM records WHERE id=?').bind(id).first();return json({record:mapRecord(r)});}catch(e){if(String(e.message).includes('UNIQUE'))return fail('That PC Number is already registered in this category.',409);return fail('Could not update the record.',500);}
   }
   const scanMatch=path.match(/^\/api\/records\/([^/]+)\/scan$/);
