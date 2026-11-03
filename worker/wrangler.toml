@@ -1,0 +1,13 @@
+name = "nextgen-smart-classroom-api"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "nextgen-smart-classroom"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[vars]
+# Configure secrets separately with `wrangler secret put`.
+# ADMIN_USERNAME and ADMIN_PASSWORD are required secrets.
+# SESSION_SECRET must be a long random secret (32+ characters).
