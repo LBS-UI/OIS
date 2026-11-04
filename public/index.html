@@ -2,8 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b2b4c">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/nextgen.jpg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="NextGen">
 <meta name="description" content="NextGen Smart Classroom — a streamlined classroom platform for participant registration, secure QR identification, and organized learning records.">
 <title>NextGen Smart Classroom | Smart Learning, Simplified</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -3092,6 +3097,49 @@ body.intro-lock{overflow:hidden;height:100vh}
 @media (prefers-reduced-motion: reduce){
   .qr-modal{animation:none}
 }
+
+/* ------------------------------------------------------------
+   27. UNIVERSAL DEVICE COMPATIBILITY
+   ------------------------------------------------------------ */
+@supports (min-height: 100dvh) {
+  .app-shell, .main-area, .landing, .hero, #introScreen { min-height: 100dvh; }
+}
+
+@media (max-width: 800px) {
+  .main-area {
+    padding-left: max(17px, env(safe-area-inset-left));
+    padding-right: max(17px, env(safe-area-inset-right));
+  }
+  .sidebar {
+    padding-top: max(27px, env(safe-area-inset-top));
+    padding-bottom: max(27px, env(safe-area-inset-bottom));
+  }
+  .toast {
+    bottom: max(24px, calc(env(safe-area-inset-bottom) + 16px));
+    right: max(16px, env(safe-area-inset-right));
+  }
+  .notification-panel {
+    max-height: calc(100dvh - 100px - env(safe-area-inset-top));
+  }
+}
+
+@media (max-width: 520px) {
+  .table-toolbar select { min-width: 0; flex: 1; }
+  .table-toolbar { gap: 8px; }
+  .records-controls { gap: 6px; }
+}
+
+button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.records-updated {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+[data-theme="dark"] .records-updated { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -3189,7 +3237,7 @@ body.intro-lock{overflow:hidden;height:100vh}
                 <button id="notificationCloseBtn" type="button" class="notification-close-btn" aria-label="Close notifications">×</button>
               </div>
             </div>
-            <div id="notificationList" class="notification-list"></div>
+            <div id="notificationList" class="notification-list" aria-live="polite" aria-atomic="false"></div>
           </div>
         </div>
 
@@ -3673,10 +3721,10 @@ body.intro-lock{overflow:hidden;height:100vh}
               </div>
               <div class="form-grid two">
                 <label>Pre-test score
-                  <input name="preTest" type="number" min="0" step="any" placeholder="e.g. 15">
+                  <input name="preTest" type="number" min="0" step="any" inputmode="decimal" placeholder="e.g. 15">
                 </label>
                 <label>Post-test score
-                  <input name="postTest" type="number" min="0" step="any" placeholder="e.g. 24">
+                  <input name="postTest" type="number" min="0" step="any" inputmode="decimal" placeholder="e.g. 24">
                 </label>
                 <label class="wide">Feedback / notes
                   <textarea name="feedback" rows="3" maxlength="2000" placeholder="Optional notes"></textarea>
@@ -3749,6 +3797,8 @@ body.intro-lock{overflow:hidden;height:100vh}
               <option value="pc-asc">PC number ascending</option>
             </select>
             <span class="spacer" aria-hidden="true"></span>
+            <span id="recordsUpdated" class="records-updated" aria-live="polite"></span>
+            <button type="button" class="clear-filters-btn" id="refreshRecordsBtn" title="Refresh records">↻ Refresh</button>
             <button type="button" class="clear-filters-btn" id="clearFilters">Clear filters</button>
           </div>
 
@@ -3941,6 +3991,17 @@ body.intro-lock{overflow:hidden;height:100vh}
   }
   document.addEventListener('keydown', onKeydown);
 })();
+</script>
+
+<!-- Service worker registration -->
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/service-worker.js').catch(err => {
+      console.warn('[NextGen] Service worker registration failed:', err);
+    });
+  });
+}
 </script>
 </body>
 </html>
