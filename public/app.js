@@ -1,16 +1,22 @@
 /* NextGen Smart Classroom online portal. Configure /api on the same origin via Cloudflare Worker. */
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
+
 const state = {
   records: [],
   editingId: null,
   currentQR: null,
   apiReady: false,
   recordPage: 1,
-  hasLoadedOnce: false
+  hasLoadedOnce: false,
+  recordsLastFetched: 0
 };
+
 const categoryNames = {student:'Student', employee:'Employee / Client', visitor:'Visitor'};
 const PAGE_SIZE = 10;
+const RECORDS_STALE_MS = 60000;
+const API_TIMEOUT_MS = 20000;
+const SOUND_PREF_KEY = 'ng-sound-enabled';
 const loginView = $('#loginView'), appView = $('#appView');
 
 /* ============================================================
@@ -21,8 +27,7 @@ const notifications = {
     listUrl: '/notifications',
     readUrl: (id) => `/notifications/${encodeURIComponent(id)}/read`,
     readAllUrl: '/notifications/read-all',
-    pollIntervalMs: 45000,
-    firstPollDelayMs: 800
+    pollIntervalMs: 45000
   },
   state: {
     initialized: false,
@@ -33,7 +38,6 @@ const notifications = {
     loading: false,
     inFlight: false,
     pollTimer: null,
-    firstTimer: null,
     panelOpen: false,
     lastError: null,
     markAllSupported: true,
@@ -44,161 +48,335 @@ const notifications = {
 };
 
 /* ============================================================
-   NOTIFICATION SOUND
+   NOTIFICATION SOUND — with candidate paths for filename variations
    ============================================================ */
-const notificationSound = new Audio("./sounds/notification.mp3");
+const NOTIFICATION_SOUND_CANDIDATES = [
+  '/sounds/Notification%20Sound.mp3',
+  '/sounds/notification.mp3'
+];
+const notificationSound = new Audio();
 notificationSound.volume = 0.6;
+notificationSound.preload = 'auto';
+(function tryNextSound(i) {
+  if (i >= NOTIFICATION_SOUND_CANDIDATES.length) {
+    console.warn('[NextGen] Notification sound not found at any candidate path.');
+    return;
+  }
+  notificationSound.src = NOTIFICATION_SOUND_CANDIDATES[i];
+  notificationSound.load();
+  notificationSound.addEventListener('error', () => tryNextSound(i + 1), { once: true });
+})(0);
 
 async function playNotificationSound() {
-    try {
-        notificationSound.currentTime = 0;
-        await notificationSound.play();
-    } catch (error) {
-        console.warn("Notification sound could not play:", error);
-    }
-}
-
-document.getElementById("enableSoundBtn")
-    ?.addEventListener("click", async () => {
-        try {
-            notificationSound.currentTime = 0;
-            await notificationSound.play();
-            notificationSound.pause();
-            notificationSound.currentTime = 0;
-
-            document.getElementById("enableSoundBtn").textContent =
-                "🔔 Notification Sounds Enabled";
-        } catch (error) {
-            console.error("Could not enable sound:", error);
-        }
-    });
-
-/* ============================================================
-   HELPERS
-   ============================================================ */
-function esc(value='') { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function toast(message) { const t=$('#toast'); t.textContent=message; t.classList.add('show'); clearTimeout(toast.timer); toast.timer=setTimeout(()=>t.classList.remove('show'),2600); }
-async function api(path, options={}) {
-  const res = await fetch(`/api${path}`, { credentials:'same-origin', ...options, headers:{ ...(options.body ? {'Content-Type':'application/json'} : {}), ...(options.headers||{}) } });
-  let data={}; try { data=await res.json(); } catch {}
-  if (!res.ok) { const e=new Error(data.error || `Request failed (${res.status})`); e.status=res.status; throw e; }
-  return data;
-}
-function showLogin() { loginView.classList.remove('hidden'); appView.classList.add('hidden'); $('#logoutBtn').classList.add('hidden'); onLoggedOut(); }
-function showApp() { loginView.classList.add('hidden'); appView.classList.remove('hidden'); $('#logoutBtn').classList.remove('hidden'); onAuthenticated(); }
-function setConnection(ok, text) { $('#connectionDot').classList.toggle('online',ok); $('#connectionText').textContent=text; $('#apiStatus').textContent=ok?'Connected to Cloudflare Worker API':'Worker API not connected'; $('#apiTag').textContent=ok?'Connected':'Setup needed'; $('#apiTag').classList.toggle('ok',ok); $('#apiBullet').style.background=ok?'#2db98e':'#e1a342'; }
-async function checkSession() { try { await api('/me'); state.apiReady=true; setConnection(true,'Cloud connected'); showApp(); await loadRecords(); } catch(e) { state.apiReady=false; setConnection(false,'API not configured'); showLogin(); if(e.status===401) $('#loginMessage').textContent='Please sign in to continue.'; } }
-
-function navigate(page) {
-  const recModal = $('#recordModal');
-  if(recModal && recModal.open) recModal.close();
-  const qrModal = $('#qrModal');
-  if(qrModal && qrModal.open) qrModal.close();
-
-  const pages=['home','register','records','scan'];
-  if(!pages.includes(page)) page='home';
-  $$('.page').forEach(el=>el.classList.toggle('hidden',el.id!==`page-${page}`));
-  $$('.nav-link[data-page]').forEach(el=>el.classList.toggle('active',el.dataset.page===page));
-  $('#pageTitle').textContent=({home:'Overview',register:state.editingId?'Edit registration':'Registration',records:'Records & reports',scan:'QR lookup'})[page];
-  $('#sidebar').classList.remove('open');
-  if(page==='records') renderRecords();
-  if(page==='home') renderHome();
-  if(page==='register'&&!state.editingId) $('#formHeading').textContent='Create a registration';
-  window.scrollTo({top:0,behavior:'smooth'});
-}
-
-$$('[data-page]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.page)));
-$$('[data-goto]').forEach(b=>b.addEventListener('click',()=>{ if(b.dataset.goto==='register') resetForm(); navigate(b.dataset.goto); }));
-$('#menuBtn').addEventListener('click',()=>$('#sidebar').classList.toggle('open'));
-$('#loginForm').addEventListener('submit',async e=>{e.preventDefault(); const form=new FormData(e.currentTarget); const msg=$('#loginMessage'); msg.textContent='Signing in…'; try { await api('/login',{method:'POST',body:JSON.stringify({username:form.get('username'),password:form.get('password')})}); msg.textContent=''; state.apiReady=true; setConnection(true,'Cloud connected'); showApp(); await loadRecords(); toast('Signed in successfully'); } catch(err) { msg.textContent=err.message==='Failed to fetch'?'Cannot reach the Worker API. Check deployment setup.':err.message; } });
-$('#logoutBtn').addEventListener('click',async()=>{try{await api('/logout',{method:'POST'});}catch{} state.records=[]; state.hasLoadedOnce=false; resetRecordsView(); showLogin(); toast('Signed out');});
-
-function resetForm() {
-  state.editingId=null;
-  $('#recordForm').reset();
-  $('#formHeading').textContent='Create a registration';
-  $('#saveBtn').innerHTML='Save registration <span>→</span>';
-  $('#formMessage').textContent='';
-  $('#formMessage').className='form-message';
-  $('#qrPreview').innerHTML='<div class="qr-placeholder">▦</div>';
-  $('#qrTitle').textContent='QR code appears after saving';
-  $('#qrDescription').textContent="A random identifier will be assigned to the saved record. The QR will not contain the participant's personal details.";
-  const dl = $('#downloadQr'); if(dl) dl.disabled=true;
-  const pr = $('#printQr'); if(pr) pr.disabled=true;
-  state.currentQR=null;
-  updateCategoryFields();
-}
-$('#clearForm').addEventListener('click',resetForm);
-
-function updateCategoryFields(){
-  const cat=$('#category').value;
-  $('#gradeField').classList.toggle('hidden',cat!=='student');
-  $('#sectionField').classList.toggle('hidden',cat!=='student');
-  $('#schoolField').classList.toggle('hidden',cat!=='student');
-  $('#officeField').classList.toggle('hidden',cat==='student');
-  $('#positionField').classList.toggle('hidden',cat==='student');
-  $('#pcField').querySelector('span').classList.toggle('hidden',cat!=='student');
-  $('#pcField').querySelector('input').required=cat==='student';
-}
-$('#category').addEventListener('change',updateCategoryFields);
-
-function readRecordForm() {
-  const f=new FormData($('#recordForm'));
-  const category=f.get('category');
-  const n=v=>v===''?null:Number(v);
-  return {
-    category,
-    pcNumber:String(f.get('pcNumber')).trim(),
-    fullName:String(f.get('fullName')).trim(),
-    grade:category==='student'?String(f.get('grade')||'').trim():null,
-    section:category==='student'?String(f.get('section')||'').trim():null,
-    school:category==='student'?String(f.get('school')||'').trim():null,
-    office:category!=='student'?String(f.get('office')||'').trim():null,
-    position:category!=='student'?String(f.get('position')||'').trim():null,
-    preTest:n(f.get('preTest')),
-    postTest:n(f.get('postTest')),
-    feedback:String(f.get('feedback')||'').trim()
-  };
-}
-
-$('#recordForm').addEventListener('submit',async e=>{
-  e.preventDefault();
-  const msg=$('#formMessage');
-  const data=readRecordForm();
-  if((data.category==='student'&&!data.pcNumber)||!data.fullName){
-    msg.textContent=data.category==='student'?'PC Number and full name are required.':'Full name is required.';
-    return;
-  }
-  if((data.preTest!==null&&(!Number.isFinite(data.preTest)||data.preTest<0))||(data.postTest!==null&&(!Number.isFinite(data.postTest)||data.postTest<0))){
-    msg.textContent='Scores must be valid non-negative numbers.';
-    return;
-  }
-  const btn=$('#saveBtn');
-  btn.disabled=true;
-  msg.textContent='Saving to cloud…';
   try {
-    const result=state.editingId
-      ? await api(`/records/${encodeURIComponent(state.editingId)}`,{method:'PATCH',body:JSON.stringify(data)})
-      : await api('/records',{method:'POST',body:JSON.stringify(data)});
-    const record=result.record;
-    msg.textContent='Record saved successfully.';
-    msg.className='form-message success';
-    if(record?.qrToken) await displayQR(record.qrToken);
-    state.editingId=record?.id||state.editingId;
-    $('#formHeading').textContent='Registration saved';
-    $('#saveBtn').innerHTML='Save changes <span>→</span>';
-    await loadRecords();
-    toast('Registration saved to cloud');
-    refreshNotifications();
-  } catch(err){
-    msg.textContent=err.message==='Failed to fetch'?'Could not reach the database API. Check the Cloudflare Worker setup.':err.message;
-  } finally {
-    btn.disabled=false;
+    notificationSound.currentTime = 0;
+    await notificationSound.play();
+  } catch (error) {
+    console.warn('Notification sound could not play:', error);
+  }
+}
+
+// Restore enabled state and button label from previous session
+try {
+  if (localStorage.getItem(SOUND_PREF_KEY) === '1') {
+    const btn = document.getElementById('enableSoundBtn');
+    if (btn) btn.textContent = '🔔 Notification Sounds Enabled';
+  }
+} catch {}
+
+document.getElementById('enableSoundBtn')?.addEventListener('click', async () => {
+  try {
+    notificationSound.currentTime = 0;
+    await notificationSound.play();
+    notificationSound.pause();
+    notificationSound.currentTime = 0;
+    document.getElementById('enableSoundBtn').textContent = '🔔 Notification Sounds Enabled';
+    try { localStorage.setItem(SOUND_PREF_KEY, '1'); } catch {}
+  } catch (error) {
+    console.error('Could not enable sound:', error);
   }
 });
 
 /* ============================================================
-   QR GENERATION
+   HELPERS
+   ============================================================ */
+function esc(value='') {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function toast(message) {
+  const t = $('#toast');
+  if (!t) return;
+  t.textContent = message;
+  t.classList.add('show');
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+async function api(path, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  try {
+    const res = await fetch(`/api${path}`, {
+      ...options,
+      credentials: 'same-origin',
+      signal: controller.signal,
+      headers: {
+        ...(options.body ? {'Content-Type':'application/json'} : {}),
+        ...(options.headers || {})
+      }
+    });
+    let data = {};
+    try { data = await res.json(); } catch {}
+    if (!res.ok) {
+      const e = new Error(data.error || `Request failed (${res.status})`);
+      e.status = res.status;
+      throw e;
+    }
+    return data;
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      const e = new Error('Request timed out. Check your connection.');
+      e.status = 0;
+      throw e;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function setConnection(ok, text) {
+  const isOffline = !navigator.onLine;
+  const dot = $('#connectionDot'), ct = $('#connectionText');
+  if (dot) dot.classList.toggle('online', ok && !isOffline);
+  if (ct) ct.textContent = isOffline ? 'Offline' : text;
+  const as = $('#apiStatus'), at = $('#apiTag'), ab = $('#apiBullet');
+  if (as) as.textContent = ok ? 'Connected to Cloudflare Worker API' : 'Worker API not connected';
+  if (at) { at.textContent = ok ? 'Connected' : 'Setup needed'; at.classList.toggle('ok', ok); }
+  if (ab) ab.style.background = ok ? '#2db98e' : '#e1a342';
+}
+
+function updateOnlineStatus() {
+  const dot = $('#connectionDot'), ct = $('#connectionText');
+  if (!dot || !ct) return;
+  if (!navigator.onLine) {
+    dot.classList.remove('online');
+    ct.textContent = 'Offline';
+  } else if (state.apiReady) {
+    dot.classList.add('online');
+    ct.textContent = 'Cloud connected';
+  }
+}
+window.addEventListener('online', updateOnlineStatus);
+window.addEventListener('offline', updateOnlineStatus);
+
+function showLogin() {
+  loginView?.classList.remove('hidden');
+  appView?.classList.add('hidden');
+  $('#logoutBtn')?.classList.add('hidden');
+  onLoggedOut();
+}
+
+function showApp() {
+  loginView?.classList.add('hidden');
+  appView?.classList.remove('hidden');
+  $('#logoutBtn')?.classList.remove('hidden');
+  onAuthenticated();
+}
+
+async function checkSession() {
+  try {
+    await api('/me');
+    state.apiReady = true;
+    setConnection(true, 'Cloud connected');
+    showApp();
+    await loadRecords();
+  } catch (e) {
+    state.apiReady = false;
+    setConnection(false, 'API not configured');
+    showLogin();
+    if (e.status === 401) {
+      const m = $('#loginMessage');
+      if (m) m.textContent = 'Please sign in to continue.';
+    }
+  }
+}
+
+function navigate(page) {
+  const recModal = $('#recordModal'); if (recModal?.open) recModal.close();
+  const qrModal = $('#qrModal'); if (qrModal?.open) qrModal.close();
+
+  const pages = ['home','register','records','scan'];
+  if (!pages.includes(page)) page = 'home';
+
+  $$('.page').forEach(el => el.classList.toggle('hidden', el.id !== `page-${page}`));
+  $$('.nav-link[data-page]').forEach(el => el.classList.toggle('active', el.dataset.page === page));
+
+  const pt = $('#pageTitle');
+  if (pt) pt.textContent = ({
+    home: 'Overview',
+    register: state.editingId ? 'Edit registration' : 'Registration',
+    records: 'Records & reports',
+    scan: 'QR lookup'
+  })[page];
+
+  $('#sidebar')?.classList.remove('open');
+
+  if (page === 'records') renderRecords();
+  if (page === 'home') renderHome();
+  if (page === 'register' && !state.editingId) {
+    const fh = $('#formHeading');
+    if (fh) fh.textContent = 'Create a registration';
+  }
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+$$('[data-page]').forEach(b => b.addEventListener('click', () => navigate(b.dataset.page)));
+$$('[data-goto]').forEach(b => b.addEventListener('click', () => {
+  if (b.dataset.goto === 'register') resetForm();
+  navigate(b.dataset.goto);
+}));
+$('#menuBtn')?.addEventListener('click', () => $('#sidebar')?.classList.toggle('open'));
+
+/* ============================================================
+   LOGIN / LOGOUT
+   ============================================================ */
+$('#loginForm')?.addEventListener('submit', async e => {
+  e.preventDefault();
+  const form = new FormData(e.currentTarget);
+  const msg = $('#loginMessage');
+  if (msg) msg.textContent = 'Signing in…';
+  try {
+    await api('/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        username: form.get('username'),
+        password: form.get('password')
+      })
+    });
+    if (msg) msg.textContent = '';
+    state.apiReady = true;
+    setConnection(true, 'Cloud connected');
+    showApp();
+    await loadRecords();
+    toast('Signed in successfully');
+  } catch (err) {
+    if (msg) msg.textContent = err.message === 'Failed to fetch'
+      ? 'Cannot reach the Worker API. Check deployment setup.'
+      : err.message;
+  }
+});
+
+$('#logoutBtn')?.addEventListener('click', async () => {
+  try { await api('/logout', { method: 'POST' }); } catch {}
+  state.records = [];
+  state.hasLoadedOnce = false;
+  state.recordsLastFetched = 0;
+  resetRecordsView();
+  showLogin();
+  toast('Signed out');
+});
+
+/* ============================================================
+   REGISTRATION FORM
+   ============================================================ */
+function resetForm() {
+  state.editingId = null;
+  $('#recordForm')?.reset();
+  if ($('#formHeading')) $('#formHeading').textContent = 'Create a registration';
+  if ($('#saveBtn')) $('#saveBtn').innerHTML = 'Save registration <span>→</span>';
+  const fm = $('#formMessage'); if (fm) { fm.textContent = ''; fm.className = 'form-message'; }
+  if ($('#qrPreview')) $('#qrPreview').innerHTML = '<div class="qr-placeholder">▦</div>';
+  if ($('#qrTitle')) $('#qrTitle').textContent = 'QR code appears after saving';
+  if ($('#qrDescription')) $('#qrDescription').textContent = "A random identifier will be assigned to the saved record. The QR will not contain the participant's personal details.";
+  if ($('#downloadQr')) $('#downloadQr').disabled = true;
+  if ($('#printQr')) $('#printQr').disabled = true;
+  state.currentQR = null;
+  updateCategoryFields();
+}
+$('#clearForm')?.addEventListener('click', resetForm);
+
+function updateCategoryFields() {
+  const catEl = $('#category');
+  if (!catEl) return;
+  const cat = catEl.value;
+  $('#gradeField')?.classList.toggle('hidden', cat !== 'student');
+  $('#sectionField')?.classList.toggle('hidden', cat !== 'student');
+  $('#schoolField')?.classList.toggle('hidden', cat !== 'student');
+  $('#officeField')?.classList.toggle('hidden', cat === 'student');
+  $('#positionField')?.classList.toggle('hidden', cat === 'student');
+  const pcSpan = $('#pcField')?.querySelector('span');
+  if (pcSpan) pcSpan.classList.toggle('hidden', cat !== 'student');
+  const pcInput = $('#pcField')?.querySelector('input');
+  if (pcInput) pcInput.required = cat === 'student';
+}
+$('#category')?.addEventListener('change', updateCategoryFields);
+
+function readRecordForm() {
+  const f = new FormData($('#recordForm'));
+  const category = f.get('category');
+  const n = v => v === '' ? null : Number(v);
+  return {
+    category,
+    pcNumber: String(f.get('pcNumber')).trim(),
+    fullName: String(f.get('fullName')).trim(),
+    grade: category === 'student' ? String(f.get('grade') || '').trim() : null,
+    section: category === 'student' ? String(f.get('section') || '').trim() : null,
+    school: category === 'student' ? String(f.get('school') || '').trim() : null,
+    office: category !== 'student' ? String(f.get('office') || '').trim() : null,
+    position: category !== 'student' ? String(f.get('position') || '').trim() : null,
+    preTest: n(f.get('preTest')),
+    postTest: n(f.get('postTest')),
+    feedback: String(f.get('feedback') || '').trim()
+  };
+}
+
+$('#recordForm')?.addEventListener('submit', async e => {
+  e.preventDefault();
+  const msg = $('#formMessage');
+  const data = readRecordForm();
+
+  if ((data.category === 'student' && !data.pcNumber) || !data.fullName) {
+    if (msg) msg.textContent = data.category === 'student'
+      ? 'PC Number and full name are required.'
+      : 'Full name is required.';
+    return;
+  }
+  if ((data.preTest !== null && (!Number.isFinite(data.preTest) || data.preTest < 0)) ||
+      (data.postTest !== null && (!Number.isFinite(data.postTest) || data.postTest < 0))) {
+    if (msg) msg.textContent = 'Scores must be valid non-negative numbers.';
+    return;
+  }
+
+  const btn = $('#saveBtn');
+  if (btn) btn.disabled = true;
+  if (msg) msg.textContent = 'Saving to cloud…';
+
+  try {
+    const result = state.editingId
+      ? await api(`/records/${encodeURIComponent(state.editingId)}`, { method: 'PATCH', body: JSON.stringify(data) })
+      : await api('/records', { method: 'POST', body: JSON.stringify(data) });
+    const record = result.record;
+    if (msg) { msg.textContent = 'Record saved successfully.'; msg.className = 'form-message success'; }
+    if (record?.qrToken) await displayQR(record.qrToken);
+    state.editingId = record?.id || state.editingId;
+    if ($('#formHeading')) $('#formHeading').textContent = 'Registration saved';
+    if (btn) btn.innerHTML = 'Save changes <span>→</span>';
+    await loadRecords();
+    toast('Registration saved to cloud');
+    refreshNotifications();
+  } catch (err) {
+    if (msg) msg.textContent = err.message === 'Failed to fetch'
+      ? 'Could not reach the database API. Check the Cloudflare Worker setup.'
+      : err.message;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+});
+
+/* ============================================================
+   QR GENERATION — shared helper
    ============================================================ */
 async function renderQRInto(container, token, size = 180) {
   if (!container) return null;
@@ -235,15 +413,15 @@ async function displayQR(token) {
   const preview = $('#qrPreview');
   if (!preview) return;
   await renderQRInto(preview, token, 160);
-  $('#qrTitle').textContent = token ? 'Participant QR is ready' : 'QR code appears after saving';
-  $('#qrDescription').textContent = token
+  if ($('#qrTitle')) $('#qrTitle').textContent = token ? 'Participant QR is ready' : 'QR code appears after saving';
+  if ($('#qrDescription')) $('#qrDescription').textContent = token
     ? 'Token: ' + token
     : "A random identifier will be assigned to the saved record. The QR will not contain the participant's personal details.";
-  const dl = $('#downloadQr'); if (dl) dl.disabled = !token;
-  const pr = $('#printQr'); if (pr) pr.disabled = !token;
+  if ($('#downloadQr')) $('#downloadQr').disabled = !token;
+  if ($('#printQr')) $('#printQr').disabled = !token;
 }
 
-$('#downloadQr').addEventListener('click', () => {
+$('#downloadQr')?.addEventListener('click', () => {
   const canvas = $('#qrPreview canvas');
   if (!canvas) { toast('QR image is not available'); return; }
   const a = document.createElement('a');
@@ -276,8 +454,7 @@ function printQR(record) {
   const w = window.open('', '_blank', 'width=640,height=820');
   if (!w) { toast('Allow pop-ups to print the QR code'); return; }
 
-  const html = `<!doctype html>
-<html><head><meta charset="utf-8"><title>QR — ${esc(record.fullName || 'Participant')}</title>
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>QR — ${esc(record.fullName || 'Participant')}</title>
 <style>
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;text-align:center;padding:40px 24px;color:#0a1f33;margin:0}
   h1{font-size:20px;margin:0 0 6px;font-weight:800}
@@ -299,11 +476,11 @@ function printQR(record) {
 }
 
 /* ============================================================
-   RECORDS DASHBOARD
+   RECORDS DASHBOARD — load, filter, sort, paginate, view
    ============================================================ */
-async function loadRecords(){
+async function loadRecords() {
   const tableEl = $('#recordsTable');
-  if(tableEl && !state.hasLoadedOnce){
+  if (tableEl && !state.hasLoadedOnce) {
     tableEl.innerHTML = '<div class="table-loading">Loading records…</div>';
   }
   try {
@@ -311,29 +488,70 @@ async function loadRecords(){
     state.records = result.records || [];
     state.apiReady = true;
     state.hasLoadedOnce = true;
+    state.recordsLastFetched = Date.now();
     setConnection(true, 'Cloud connected');
     populateSectionFilter();
     renderRecords();
     renderHome();
-  } catch(e) {
-    if(e.status === 401){ showLogin(); return; }
+    updateRecordsUpdatedIndicator();
+  } catch (e) {
+    if (e.status === 401) { showLogin(); return; }
     state.apiReady = false;
     setConnection(false, 'API unavailable');
-    $('#recordsTable').innerHTML = `<div class="empty-state"><span class="empty-symbol">!</span><b>Could not load records</b><p>${esc(e.message)}. Configure the Worker API and D1 binding.</p></div>`;
+    if (tableEl) {
+      tableEl.innerHTML = `<div class="empty-state">
+        <span class="empty-symbol">!</span>
+        <b>Could not load records</b>
+        <p>${esc(e.message)}</p>
+        <button type="button" class="btn secondary small" id="retryLoadRecords" style="margin-top:10px">Try again</button>
+      </div>`;
+      $('#retryLoadRecords')?.addEventListener('click', loadRecords);
+    }
   }
 }
 
-function populateSectionFilter(){
+function updateRecordsUpdatedIndicator() {
+  const el = $('#recordsUpdated');
+  if (!el) return;
+  const t = state.recordsLastFetched;
+  if (!t) { el.textContent = ''; return; }
+  const diff = Date.now() - t;
+  let label;
+  if (diff < 10000) label = 'just now';
+  else if (diff < 60000) label = Math.floor(diff / 1000) + 's ago';
+  else if (diff < 3600000) label = Math.floor(diff / 60000) + 'm ago';
+  else label = new Date(t).toLocaleTimeString();
+  el.textContent = 'Updated ' + label;
+}
+setInterval(updateRecordsUpdatedIndicator, 15000);
+
+// Cross-device sync — refresh when the tab returns and data is stale
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (!state.apiReady) return;
+  if (Date.now() - state.recordsLastFetched < RECORDS_STALE_MS) return;
+  loadRecords();
+});
+
+// Manual refresh button
+$('#refreshRecordsBtn')?.addEventListener('click', () => {
+  const btn = $('#refreshRecordsBtn');
+  if (btn) btn.disabled = true;
+  loadRecords().finally(() => { if (btn) btn.disabled = false; });
+});
+
+function populateSectionFilter() {
   const select = $('#filterSection');
-  if(!select) return;
+  if (!select) return;
   const current = select.value || 'all';
-  const sections = [...new Set(state.records.map(r => r.section).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+  const sections = [...new Set(state.records.map(r => r.section).filter(Boolean))]
+    .sort((a, b) => String(a).localeCompare(String(b)));
   select.replaceChildren();
   const all = document.createElement('option');
   all.value = 'all';
   all.textContent = 'All sections';
   select.appendChild(all);
-  for(const sec of sections){
+  for (const sec of sections) {
     const o = document.createElement('option');
     o.value = sec;
     o.textContent = sec;
@@ -342,82 +560,81 @@ function populateSectionFilter(){
   select.value = (current === 'all' || sections.includes(current)) ? current : 'all';
 }
 
-function getFilteredRecords(){
+function getFilteredRecords() {
   const query = ($('#searchInput')?.value || '').trim().toLowerCase();
   const catFilter = $('#filterCategory')?.value || 'all';
   const secFilter = $('#filterSection')?.value || 'all';
   const sortBy = $('#sortBy')?.value || 'newest';
 
   const list = state.records.filter(r => {
-    if(catFilter !== 'all' && r.category !== catFilter) return false;
-    if(secFilter !== 'all' && (r.section || '') !== secFilter) return false;
-    if(query){
+    if (catFilter !== 'all' && r.category !== catFilter) return false;
+    if (secFilter !== 'all' && (r.section || '') !== secFilter) return false;
+    if (query) {
       const hay = [r.pcNumber, r.fullName, r.grade, r.section, r.school, r.office, r.position]
         .map(v => String(v || '').toLowerCase());
-      if(!hay.some(v => v.includes(query))) return false;
+      if (!hay.some(v => v.includes(query))) return false;
     }
     return true;
   });
 
   list.sort((a, b) => {
-    switch(sortBy){
-      case 'oldest':   return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
-      case 'name-asc': return String(a.fullName || '').localeCompare(String(b.fullName || ''));
-      case 'name-desc':return String(b.fullName || '').localeCompare(String(a.fullName || ''));
-      case 'pc-asc':   return String(a.pcNumber || '').localeCompare(String(b.pcNumber || ''));
-      case 'newest':
-      default:
-        return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+    switch (sortBy) {
+      case 'oldest':    return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+      case 'name-asc':  return String(a.fullName || '').localeCompare(String(b.fullName || ''));
+      case 'name-desc': return String(b.fullName || '').localeCompare(String(a.fullName || ''));
+      case 'pc-asc':    return String(a.pcNumber || '').localeCompare(String(b.pcNumber || ''));
+      default:          return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
     }
   });
 
   return list;
 }
 
-function renderRecords(){
+function renderRecords() {
   const list = getFilteredRecords();
   const total = list.length;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
-  if(state.recordPage > totalPages) state.recordPage = totalPages;
-  if(state.recordPage < 1) state.recordPage = 1;
+  if (state.recordPage > totalPages) state.recordPage = totalPages;
+  if (state.recordPage < 1) state.recordPage = 1;
 
   const start = (state.recordPage - 1) * PAGE_SIZE;
   const pageRecords = list.slice(start, start + PAGE_SIZE);
 
-  $('#recordCount').textContent = `${total} record${total === 1 ? '' : 's'}`;
+  if ($('#recordCount')) $('#recordCount').textContent = `${total} record${total === 1 ? '' : 's'}`;
 
-  if(pageRecords.length === 0){
+  const tableEl = $('#recordsTable');
+  if (!tableEl) return;
+
+  if (pageRecords.length === 0) {
     const title = state.records.length ? 'No matching records' : 'No records yet';
     const sub = state.records.length
       ? 'Try another search or clear the filters.'
       : 'Register a participant to start building your records.';
-    $('#recordsTable').innerHTML = `<div class="empty-state"><span class="empty-symbol">▤</span><b>${title}</b><p>${sub}</p></div>`;
-    const pagEl = $('#pagination');
-    if(pagEl) pagEl.replaceChildren();
+    tableEl.innerHTML = `<div class="empty-state"><span class="empty-symbol">▤</span><b>${title}</b><p>${sub}</p></div>`;
+    $('#pagination')?.replaceChildren();
     return;
   }
 
   const rows = pageRecords.map(recordRow).join('');
-  $('#recordsTable').innerHTML = `<table class="data-table"><thead><tr><th>PC number / type</th><th>Participant</th><th>Pre-test</th><th>Post-test</th><th>Created</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`;
+  tableEl.innerHTML = `<table class="data-table"><thead><tr><th>PC number / type</th><th>Participant</th><th>Pre-test</th><th>Post-test</th><th>Created</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`;
 
   $$('[data-view]').forEach(b => b.addEventListener('click', () => viewRecord(b.dataset.view)));
   $$('[data-edit]').forEach(b => b.addEventListener('click', () => editRecord(b.dataset.edit)));
   $$('[data-qr]').forEach(b => b.addEventListener('click', () => viewRecordQR(b.dataset.qr)));
   $$('[data-delete]').forEach(b => b.addEventListener('click', async () => {
-    if(!confirm('Delete this record permanently? This cannot be undone.')) return;
+    if (!confirm('Delete this record permanently? This cannot be undone.')) return;
     try {
       await api('/records/' + encodeURIComponent(b.dataset.delete), { method: 'DELETE' });
       toast('Record deleted');
       await loadRecords();
       refreshNotifications();
-    } catch(err) { toast(err.message); }
+    } catch (err) { toast(err.message); }
   }));
 
   renderPagination(totalPages);
 }
 
-function recordRow(r){
+function recordRow(r) {
   const name = esc(r.fullName);
   const detail = r.category === 'student'
     ? [r.grade, r.section, r.school].filter(Boolean).join(' · ')
@@ -437,11 +654,11 @@ function recordRow(r){
   </tr>`;
 }
 
-function renderPagination(totalPages){
+function renderPagination(totalPages) {
   const el = $('#pagination');
-  if(!el) return;
+  if (!el) return;
   el.replaceChildren();
-  if(totalPages <= 1) return;
+  if (totalPages <= 1) return;
 
   const prev = document.createElement('button');
   prev.type = 'button';
@@ -454,24 +671,24 @@ function renderPagination(totalPages){
   const current = state.recordPage;
   let startPage = Math.max(1, current - 2);
   let endPage = Math.min(totalPages, startPage + 4);
-  if(endPage - startPage < 4) startPage = Math.max(1, endPage - 4);
+  if (endPage - startPage < 4) startPage = Math.max(1, endPage - 4);
 
-  if(startPage > 1){
+  if (startPage > 1) {
     addPageBtn(el, 1);
-    if(startPage > 2){
-      const dots = document.createElement('span');
-      dots.className = 'page-info';
-      dots.textContent = '…';
-      el.appendChild(dots);
+    if (startPage > 2) {
+      const d = document.createElement('span');
+      d.className = 'page-info';
+      d.textContent = '…';
+      el.appendChild(d);
     }
   }
-  for(let p = startPage; p <= endPage; p++) addPageBtn(el, p);
-  if(endPage < totalPages){
-    if(endPage < totalPages - 1){
-      const dots = document.createElement('span');
-      dots.className = 'page-info';
-      dots.textContent = '…';
-      el.appendChild(dots);
+  for (let p = startPage; p <= endPage; p++) addPageBtn(el, p);
+  if (endPage < totalPages) {
+    if (endPage < totalPages - 1) {
+      const d = document.createElement('span');
+      d.className = 'page-info';
+      d.textContent = '…';
+      el.appendChild(d);
     }
     addPageBtn(el, totalPages);
   }
@@ -484,29 +701,24 @@ function renderPagination(totalPages){
   next.addEventListener('click', () => { state.recordPage++; renderRecords(); });
   el.appendChild(next);
 
-  function addPageBtn(parent, page){
+  function addPageBtn(parent, page) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.textContent = String(page);
     btn.setAttribute('aria-label', `Page ${page}`);
-    if(page === current){
-      btn.classList.add('current');
-      btn.setAttribute('aria-current', 'page');
-    }
+    if (page === current) { btn.classList.add('current'); btn.setAttribute('aria-current', 'page'); }
     btn.addEventListener('click', () => { state.recordPage = page; renderRecords(); });
     parent.appendChild(btn);
   }
 }
 
-function viewRecord(id){
+function viewRecord(id) {
   const r = state.records.find(x => x.id === id);
-  if(!r) return;
-  const modal = $('#recordModal');
-  const body = $('#recordModalBody');
-  const titleEl = $('#recordModalTitle');
-  if(!modal || !body) return;
+  if (!r) return;
+  const modal = $('#recordModal'), body = $('#recordModalBody'), titleEl = $('#recordModalTitle');
+  if (!modal || !body) return;
 
-  if(titleEl) titleEl.textContent = r.fullName || 'Participant record';
+  if (titleEl) titleEl.textContent = r.fullName || 'Participant record';
   body.replaceChildren();
 
   const grid = document.createElement('div');
@@ -517,7 +729,7 @@ function viewRecord(id){
     ['PC Number', r.pcNumber || '—'],
     ['Full Name', r.fullName || '—']
   ];
-  if(r.category === 'student'){
+  if (r.category === 'student') {
     fields.push(['Grade / Year level', r.grade || '—']);
     fields.push(['Section', r.section || '—']);
     fields.push(['School', r.school || '—']);
@@ -531,7 +743,7 @@ function viewRecord(id){
   fields.push(['Registered', r.createdAt ? new Date(r.createdAt).toLocaleString() : '—']);
   fields.push(['QR token', r.qrToken || '—']);
 
-  for(const [label, value] of fields){
+  for (const [label, value] of fields) {
     const item = document.createElement('div');
     item.className = 'detail-item';
     const small = document.createElement('small');
@@ -547,15 +759,12 @@ function viewRecord(id){
   const actions = document.createElement('div');
   actions.className = 'record-modal-actions';
 
-  if(r.qrToken){
+  if (r.qrToken) {
     const qrBtn = document.createElement('button');
     qrBtn.type = 'button';
     qrBtn.className = 'btn secondary';
     qrBtn.textContent = 'Show QR';
-    qrBtn.addEventListener('click', () => {
-      modal.close();
-      viewRecordQR(id);
-    });
+    qrBtn.addEventListener('click', () => { modal.close(); viewRecordQR(id); });
     actions.appendChild(qrBtn);
   }
 
@@ -563,44 +772,35 @@ function viewRecord(id){
   editBtn.type = 'button';
   editBtn.className = 'btn primary';
   editBtn.textContent = 'Edit record';
-  editBtn.addEventListener('click', () => {
-    modal.close();
-    editRecord(id);
-  });
+  editBtn.addEventListener('click', () => { modal.close(); editRecord(id); });
   actions.appendChild(editBtn);
   body.appendChild(actions);
 
-  if(typeof modal.showModal === 'function') modal.showModal();
+  if (typeof modal.showModal === 'function') modal.showModal();
   else modal.setAttribute('open', '');
 }
 
-async function viewRecordQR(id){
+async function viewRecordQR(id) {
   const r = state.records.find(x => x.id === id);
-  if(!r) return;
+  if (!r) return;
   const modal = $('#qrModal');
-  if(!modal){ toast('QR viewer not available'); return; }
+  if (!modal) { toast('QR viewer not available'); return; }
 
-  const titleEl = $('#qrModalTitle');
-  const subEl = $('#qrModalSub');
-  const bodyEl = $('#qrModalBody');
-  const tokenEl = $('#qrModalToken');
-  const printBtn = $('#qrModalPrint');
-  const dlBtn = $('#qrModalDownload');
+  const titleEl = $('#qrModalTitle'), subEl = $('#qrModalSub'), bodyEl = $('#qrModalBody');
+  const tokenEl = $('#qrModalToken'), printBtn = $('#qrModalPrint'), dlBtn = $('#qrModalDownload');
 
   state.currentQR = r.qrToken || null;
 
-  if(titleEl) titleEl.textContent = r.fullName || 'Participant';
-  if(subEl){
+  if (titleEl) titleEl.textContent = r.fullName || 'Participant';
+  if (subEl) {
     const parts = [categoryNames[r.category] || r.category];
-    if(r.pcNumber) parts.push('PC ' + r.pcNumber);
+    if (r.pcNumber) parts.push('PC ' + r.pcNumber);
     subEl.textContent = parts.filter(Boolean).join(' · ');
   }
-  if(tokenEl){
-    tokenEl.textContent = r.qrToken ? 'Token: ' + r.qrToken : '';
-  }
+  if (tokenEl) tokenEl.textContent = r.qrToken ? 'Token: ' + r.qrToken : '';
 
-  if(bodyEl){
-    if(r.qrToken){
+  if (bodyEl) {
+    if (r.qrToken) {
       await renderQRInto(bodyEl, r.qrToken, 220);
     } else {
       bodyEl.replaceChildren();
@@ -612,36 +812,34 @@ async function viewRecordQR(id){
   }
 
   const hasQR = !!r.qrToken;
-  if(printBtn) printBtn.disabled = !hasQR;
-  if(dlBtn) dlBtn.disabled = !hasQR;
+  if (printBtn) printBtn.disabled = !hasQR;
+  if (dlBtn) dlBtn.disabled = !hasQR;
 
-  if(typeof modal.showModal === 'function') modal.showModal();
+  if (typeof modal.showModal === 'function') modal.showModal();
   else modal.setAttribute('open', '');
 }
 
 $('#qrModalClose')?.addEventListener('click', () => $('#qrModal')?.close());
-$('#qrModal')?.addEventListener('click', (e) => {
-  if(e.target === $('#qrModal')) $('#qrModal').close();
-});
+$('#qrModal')?.addEventListener('click', (e) => { if (e.target === $('#qrModal')) $('#qrModal').close(); });
 $('#qrModalPrint')?.addEventListener('click', () => {
-  if(!state.currentQR){ toast('QR is not ready'); return; }
+  if (!state.currentQR) { toast('QR is not ready'); return; }
   const r = state.records.find(x => x.qrToken === state.currentQR);
   printQR(r || { qrToken: state.currentQR, fullName: 'Participant' });
 });
 $('#qrModalDownload')?.addEventListener('click', () => {
   const canvas = $('#qrModalBody canvas');
-  if(!canvas){ toast('QR image is not ready'); return; }
+  if (!canvas) { toast('QR image is not ready'); return; }
   const a = document.createElement('a');
   a.href = canvas.toDataURL('image/png');
   a.download = `nextgen-qr-${String(state.currentQR || 'participant').slice(0, 8)}.png`;
   a.click();
 });
 
-function resetRecordsView(){
-  if($('#searchInput')) $('#searchInput').value = '';
-  if($('#filterCategory')) $('#filterCategory').value = 'all';
-  if($('#filterSection')) $('#filterSection').value = 'all';
-  if($('#sortBy')) $('#sortBy').value = 'newest';
+function resetRecordsView() {
+  if ($('#searchInput')) $('#searchInput').value = '';
+  if ($('#filterCategory')) $('#filterCategory').value = 'all';
+  if ($('#filterSection')) $('#filterSection').value = 'all';
+  if ($('#sortBy')) $('#sortBy').value = 'newest';
   state.recordPage = 1;
 }
 
@@ -652,110 +850,128 @@ $('#sortBy')?.addEventListener('change', () => { state.recordPage = 1; renderRec
 $('#clearFilters')?.addEventListener('click', () => { resetRecordsView(); renderRecords(); });
 
 $('#recordModalClose')?.addEventListener('click', () => $('#recordModal')?.close());
-$('#recordModal')?.addEventListener('click', (e) => {
-  if(e.target === $('#recordModal')) $('#recordModal').close();
-});
+$('#recordModal')?.addEventListener('click', (e) => { if (e.target === $('#recordModal')) $('#recordModal').close(); });
 
-function fillForm(r){
-  state.editingId=r.id;
-  const f=$('#recordForm');
-  for(const [key,val] of Object.entries({
-    category:r.category,pcNumber:r.pcNumber,fullName:r.fullName,
-    grade:r.grade,section:r.section,school:r.school,office:r.office,
-    position:r.position,preTest:r.preTest,postTest:r.postTest,feedback:r.feedback
-  })){
-    const el=f.elements.namedItem(key);
-    if(el) el.value=val??'';
+function fillForm(r) {
+  state.editingId = r.id;
+  const f = $('#recordForm');
+  for (const [key, val] of Object.entries({
+    category: r.category, pcNumber: r.pcNumber, fullName: r.fullName,
+    grade: r.grade, section: r.section, school: r.school, office: r.office,
+    position: r.position, preTest: r.preTest, postTest: r.postTest, feedback: r.feedback
+  })) {
+    const el = f.elements.namedItem(key);
+    if (el) el.value = val ?? '';
   }
   updateCategoryFields();
-  $('#formHeading').textContent='Edit registration';
-  $('#saveBtn').innerHTML='Save changes <span>→</span>';
-  if(r.qrToken) displayQR(r.qrToken);
+  if ($('#formHeading')) $('#formHeading').textContent = 'Edit registration';
+  if ($('#saveBtn')) $('#saveBtn').innerHTML = 'Save changes <span>→</span>';
+  if (r.qrToken) displayQR(r.qrToken);
   else displayQR(null);
 }
 
-function editRecord(id){
-  const r=state.records.find(x=>x.id===id);
-  if(!r) return;
+function editRecord(id) {
+  const r = state.records.find(x => x.id === id);
+  if (!r) return;
   resetForm();
   fillForm(r);
   navigate('register');
 }
 
-function renderHome(){
-  const rs=state.records;
-  $('#statTotal').textContent=rs.length;
-  $('#statStudents').textContent=rs.filter(r=>r.category==='student').length;
-  $('#statEmployees').textContent=rs.filter(r=>r.category==='employee').length;
-  $('#statVisitors').textContent=rs.filter(r=>r.category==='visitor').length;
-  const latest=[...rs].sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,5);
-  $('#recentTable').innerHTML=latest.length
-    ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>PC number</th><th>Name</th><th>Category</th><th>Scores</th><th>Registered</th></tr></thead><tbody>${latest.map(r=>`<tr><td><b>${esc(r.pcNumber)}</b></td><td><b>${esc(r.fullName)}</b></td><td>${categoryChip(r.category)}</td><td>${r.preTest??'—'} / ${r.postTest??'—'}</td><td>${esc(r.createdAt?new Date(r.createdAt).toLocaleDateString():'—')}</td></tr>`).join('')}</tbody></table></div>`
+function renderHome() {
+  const rs = state.records;
+  if ($('#statTotal')) $('#statTotal').textContent = rs.length;
+  if ($('#statStudents')) $('#statStudents').textContent = rs.filter(r => r.category === 'student').length;
+  if ($('#statEmployees')) $('#statEmployees').textContent = rs.filter(r => r.category === 'employee').length;
+  if ($('#statVisitors')) $('#statVisitors').textContent = rs.filter(r => r.category === 'visitor').length;
+
+  const latest = [...rs].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))).slice(0, 5);
+  const rt = $('#recentTable');
+  if (!rt) return;
+  rt.innerHTML = latest.length
+    ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>PC number</th><th>Name</th><th>Category</th><th>Scores</th><th>Registered</th></tr></thead><tbody>${latest.map(r => `<tr><td><b>${esc(r.pcNumber)}</b></td><td><b>${esc(r.fullName)}</b></td><td>${categoryChip(r.category)}</td><td>${r.preTest ?? '—'} / ${r.postTest ?? '—'}</td><td>${esc(r.createdAt ? new Date(r.createdAt).toLocaleDateString() : '—')}</td></tr>`).join('')}</tbody></table></div>`
     : `<div class="empty-state"><span class="empty-symbol">▤</span><b>No records loaded yet</b><p>Connect the database and register your first participant.</p></div>`;
 }
 
-function categoryChip(cat){return `<span class="category-chip ${esc(cat)}">${esc(categoryNames[cat]||cat)}</span>`;}
+function categoryChip(cat) {
+  return `<span class="category-chip ${esc(cat)}">${esc(categoryNames[cat] || cat)}</span>`;
+}
 
-function exportRows(){
-  return state.records.map(r=>({
-    'PC Number':r.pcNumber,
-    'Category':categoryNames[r.category]||r.category,
-    'Full Name':r.fullName,
-    'Grade':r.grade||'',
-    'Section':r.section||'',
-    'School':r.school||'',
-    'Office / Department':r.office||'',
-    'Position':r.position||'',
-    'Pre-test Score':r.preTest??'',
-    'Post-test Score':r.postTest??'',
-    'Feedback':r.feedback||'',
-    'QR Token':r.qrToken||'',
-    'Created At':r.createdAt||''
+/* ============================================================
+   EXPORTS — CSV / Excel / PDF
+   ============================================================ */
+function exportRows() {
+  return state.records.map(r => ({
+    'PC Number': r.pcNumber,
+    'Category': categoryNames[r.category] || r.category,
+    'Full Name': r.fullName,
+    'Grade': r.grade || '',
+    'Section': r.section || '',
+    'School': r.school || '',
+    'Office / Department': r.office || '',
+    'Position': r.position || '',
+    'Pre-test Score': r.preTest ?? '',
+    'Post-test Score': r.postTest ?? '',
+    'Feedback': r.feedback || '',
+    'QR Token': r.qrToken || '',
+    'Created At': r.createdAt || ''
   }));
 }
 
-function downloadBlob(blob,name){
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url;a.download=name;a.click();
-  setTimeout(()=>URL.revokeObjectURL(url),1000);
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-$('#exportCsv').addEventListener('click',()=>{
-  const rows=exportRows();
-  if(!rows.length){toast('There are no records to export');return;}
-  const keys=Object.keys(rows[0]);
-  const safe=v=>{let s=String(v??'');if(/^[=+\-@]/.test(s))s="'"+s;return `"${s.replace(/"/g,'""')}"`;};
-  const csv=[keys,...rows.map(r=>keys.map(k=>r[k]))].map(row=>row.map(safe).join(',')).join('\r\n');
-  downloadBlob(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}),'nextgen-records.csv');
+$('#exportCsv')?.addEventListener('click', () => {
+  const rows = exportRows();
+  if (!rows.length) { toast('There are no records to export'); return; }
+  const keys = Object.keys(rows[0]);
+  const safe = v => {
+    let s = String(v ?? '');
+    if (/^[=+\-@]/.test(s)) s = "'" + s;
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const csv = [keys, ...rows.map(r => keys.map(k => r[k]))]
+    .map(row => row.map(safe).join(',')).join('\r\n');
+  downloadBlob(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }), 'nextgen-records.csv');
 });
 
-$('#exportXlsx').addEventListener('click',()=>{
-  const rows=exportRows();
-  if(!rows.length){toast('There are no records to export');return;}
-  if(!window.XLSX){toast('Excel export library did not load. Use CSV for now.');return;}
-  const ws=XLSX.utils.json_to_sheet(rows);
-  const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb,ws,'Participants');
-  XLSX.writeFile(wb,'nextgen-records.xlsx');
+$('#exportXlsx')?.addEventListener('click', () => {
+  const rows = exportRows();
+  if (!rows.length) { toast('There are no records to export'); return; }
+  if (!window.XLSX) { toast('Excel export library did not load. Use CSV for now.'); return; }
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Participants');
+  XLSX.writeFile(wb, 'nextgen-records.xlsx');
 });
 
-$('#exportPdf').addEventListener('click',()=>{
-  const rows=exportRows();
-  if(!rows.length){toast('There are no records to export');return;}
-  if(!window.jspdf?.jsPDF){toast('PDF library did not load. Use CSV for now.');return;}
-  const doc=new jspdf.jsPDF({orientation:'landscape'});
+$('#exportPdf')?.addEventListener('click', () => {
+  const rows = exportRows();
+  if (!rows.length) { toast('There are no records to export'); return; }
+  if (!window.jspdf?.jsPDF) { toast('PDF library did not load. Use CSV for now.'); return; }
+  const doc = new jspdf.jsPDF({ orientation: 'landscape' });
   doc.setFontSize(15);
-  doc.text('NextGen Smart Classroom — Participant Records',14,15);
+  doc.text('NextGen Smart Classroom — Participant Records', 14, 15);
   doc.setFontSize(8);
-  const columns=['PC Number','Category','Full Name','Grade / Section','Pre-test','Post-test'];
-  const body=state.records.map(r=>[r.pcNumber,categoryNames[r.category],r.fullName,r.grade||r.office||'',r.preTest??'—',r.postTest??'—']);
-  if(doc.autoTable){
-    doc.autoTable({head:[columns],body,startY:22,styles:{fontSize:8,cellPadding:2},headStyles:{fillColor:[16,44,72]}});
+  const columns = ['PC Number','Category','Full Name','Grade / Section','Pre-test','Post-test'];
+  const body = state.records.map(r => [
+    r.pcNumber, categoryNames[r.category], r.fullName,
+    r.grade || r.office || '', r.preTest ?? '—', r.postTest ?? '—'
+  ]);
+  if (doc.autoTable) {
+    doc.autoTable({ head: [columns], body, startY: 22, styles: { fontSize: 8, cellPadding: 2 }, headStyles: { fillColor: [16, 44, 72] } });
   } else {
-    let y=25;
-    doc.text(columns.join(' | '),14,y);
-    body.forEach(row=>{y+=6;if(y>190){doc.addPage();y=15;}doc.text(row.map(x=>String(x).slice(0,25)).join(' | '),14,y);});
+    let y = 25;
+    doc.text(columns.join(' | '), 14, y);
+    body.forEach(row => {
+      y += 6;
+      if (y > 190) { doc.addPage(); y = 15; }
+      doc.text(row.map(x => String(x).slice(0, 25)).join(' | '), 14, y);
+    });
   }
   doc.save('nextgen-records.pdf');
 });
@@ -763,29 +979,26 @@ $('#exportPdf').addEventListener('click',()=>{
 /* ============================================================
    QR SCANNER
    ============================================================ */
-function normalizeScannedToken(raw){
+function normalizeScannedToken(raw) {
   let token = String(raw || '').trim();
-  if(!token) return '';
+  if (!token) return '';
   try {
     const u = new URL(token);
     token = u.searchParams.get('token') || u.hash.replace(/^#/, '') || token;
   } catch {}
   token = token.replace(/^(NGSC|NEXTGEN):/i, '').trim();
-  if(token.includes('/') && !token.startsWith('http')){
+  if (token.includes('/') && !token.startsWith('http')) {
     const parts = token.split('/').filter(Boolean);
     token = parts[parts.length - 1] || token;
   }
   return token;
 }
 
-function buildScanResultHTML(r){
+function buildScanResultHTML(r) {
   const line1 = r.category === 'student'
     ? [r.grade, r.section].filter(Boolean).join(' · ')
     : [r.office].filter(Boolean).join(' · ');
-  const line2 = r.category === 'student'
-    ? (r.school || '—')
-    : (r.position || '—');
-
+  const line2 = r.category === 'student' ? (r.school || '—') : (r.position || '—');
   return `<div class="record-detail">
     <div class="section-kicker">MATCHED RECORD</div>
     <h3>${esc(r.fullName || '—')}</h3>
@@ -804,18 +1017,17 @@ function buildScanResultHTML(r){
   </div>`;
 }
 
-async function recordScanEvent(recordId){
-  if(!recordId) return;
-  const msgEl = $('#scanEventMessage');
-  const btn = $('#recordScan');
-  if(btn) btn.disabled = true;
-  if(msgEl){ msgEl.textContent = 'Recording scan event…'; msgEl.className = 'form-message'; }
+async function recordScanEvent(recordId) {
+  if (!recordId) return;
+  const msgEl = $('#scanEventMessage'), btn = $('#recordScan');
+  if (btn) btn.disabled = true;
+  if (msgEl) { msgEl.textContent = 'Recording scan event…'; msgEl.className = 'form-message'; }
   try {
     const result = await api(`/records/${encodeURIComponent(recordId)}/scan`, {
       method: 'POST',
       body: JSON.stringify({ purpose: 'staff_lookup' })
     });
-    if(msgEl){
+    if (msgEl) {
       const already = result && (result.alreadyRecorded || result.duplicate);
       msgEl.textContent = already
         ? 'Already recorded — this participant was scanned recently.'
@@ -824,63 +1036,62 @@ async function recordScanEvent(recordId){
     }
     refreshNotifications();
   } catch (err) {
-    if(msgEl){
+    if (msgEl) {
       msgEl.textContent = err.message === 'Failed to fetch'
         ? 'Could not reach the server. Try again.'
         : (err.message || 'Could not record scan event.');
       msgEl.className = 'form-message';
     }
   } finally {
-    if(btn) btn.disabled = false;
+    if (btn) btn.disabled = false;
   }
 }
 
-$('#scanForm').addEventListener('submit', async e => {
+$('#scanForm')?.addEventListener('submit', async e => {
   e.preventDefault();
   const raw = new FormData(e.currentTarget).get('token');
   const token = normalizeScannedToken(raw);
   const msg = $('#scanMessage');
+  const resultEl = $('#scanResult');
 
-  if(!token){
-    msg.textContent = 'Enter a QR token or paste the URL from the QR code.';
-    msg.className = 'form-message';
+  if (!token) {
+    if (msg) { msg.textContent = 'Enter a QR token or paste the URL from the QR code.'; msg.className = 'form-message'; }
     return;
   }
-
-  msg.textContent = 'Looking up record…';
-  msg.className = 'form-message';
+  if (msg) { msg.textContent = 'Looking up record…'; msg.className = 'form-message'; }
 
   try {
     const result = await api(`/lookup?token=${encodeURIComponent(token)}`);
     const r = result.record;
-    if(!r || !r.id) throw new Error('No record matched that token.');
+    if (!r || !r.id) throw new Error('No record matched that token.');
 
-    msg.textContent = 'Record found.';
-    msg.className = 'form-message success';
-    $('#scanResult').innerHTML = buildScanResultHTML(r);
+    if (msg) { msg.textContent = 'Record found.'; msg.className = 'form-message success'; }
+    if (resultEl) resultEl.innerHTML = buildScanResultHTML(r);
 
     $('#recordScan')?.addEventListener('click', () => recordScanEvent(r.id));
     $('#scanViewFull')?.addEventListener('click', () => {
       const existing = state.records.find(x => x.id === r.id);
-      if(!existing) state.records = [r, ...state.records];
+      if (!existing) state.records = [r, ...state.records];
       viewRecord(r.id);
     });
   } catch (err) {
-    if(err.status === 404){
-      msg.textContent = 'No record matches that QR token. Verify the participant is registered.';
-    } else if(err.message === 'Failed to fetch'){
-      msg.textContent = 'Could not reach the server. Check the Cloudflare Worker setup.';
-    } else {
-      msg.textContent = err.message || 'Lookup failed. Try again.';
+    if (msg) {
+      msg.textContent = err.status === 404
+        ? 'No record matches that QR token. Verify the participant is registered.'
+        : (err.message === 'Failed to fetch'
+            ? 'Could not reach the server. Check the Cloudflare Worker setup.'
+            : (err.message || 'Lookup failed. Try again.'));
+      msg.className = 'form-message';
     }
-    msg.className = 'form-message';
-    $('#scanResult').innerHTML = `<div class="empty-state">
-      <span class="empty-symbol">?</span>
-      <b>${err.status === 404 ? 'No matching record' : 'Lookup failed'}</b>
-      <p>${err.status === 404
-        ? 'The QR code may belong to another system, or the participant may not be registered.'
-        : esc(err.message || 'Please try again in a moment.')}</p>
-    </div>`;
+    if (resultEl) {
+      resultEl.innerHTML = `<div class="empty-state">
+        <span class="empty-symbol">?</span>
+        <b>${err.status === 404 ? 'No matching record' : 'Lookup failed'}</b>
+        <p>${err.status === 404
+          ? 'The QR code may belong to another system, or the participant may not be registered.'
+          : esc(err.message || 'Please try again in a moment.')}</p>
+      </div>`;
+    }
   }
 });
 
@@ -888,40 +1099,38 @@ updateCategoryFields();
 checkSession();
 
 /* ============================================================
-   CAMERA SCANNER
+   CAMERA SCANNER — with specific error guidance
    ============================================================ */
 let html5Scanner = null;
 
-function setCameraHelp(text, isError = false){
+function setCameraHelp(text, isError = false) {
   const el = $('#cameraHelp');
-  if(!el) return;
+  if (!el) return;
   el.textContent = text || '';
   el.className = 'camera-help' + (isError ? ' error' : '');
   el.classList.toggle('hidden', !text);
 }
 
-$('#startCamera').addEventListener('click', async () => {
-  const box = $('#cameraReader');
-  const startBtn = $('#startCamera');
+$('#startCamera')?.addEventListener('click', async () => {
+  const box = $('#cameraReader'), startBtn = $('#startCamera');
 
-  if(html5Scanner){
+  if (html5Scanner) {
     try { await html5Scanner.stop(); await html5Scanner.clear(); } catch {}
     html5Scanner = null;
-    box.classList.add('hidden');
-    startBtn.textContent = '▦ Scan using camera';
+    box?.classList.add('hidden');
+    if (startBtn) startBtn.textContent = '▦ Scan using camera';
     setCameraHelp('');
     return;
   }
 
-  if(!window.Html5Qrcode){
+  if (!window.Html5Qrcode) {
     setCameraHelp('Camera scanner library did not load. Paste the QR token instead.', true);
     toast('Camera scanner library did not load.');
     return;
   }
 
-  box.classList.remove('hidden');
-  startBtn.disabled = true;
-  startBtn.textContent = 'Starting camera…';
+  box?.classList.remove('hidden');
+  if (startBtn) { startBtn.disabled = true; startBtn.textContent = 'Starting camera…'; }
   setCameraHelp('Requesting camera access…');
 
   try {
@@ -930,36 +1139,32 @@ $('#startCamera').addEventListener('click', async () => {
       { facingMode: 'environment' },
       { fps: 10, qrbox: { width: 220, height: 220 } },
       async (decodedText) => {
-        const input = $('#scanForm').elements.namedItem('token');
-        if(input) input.value = decodedText;
+        const input = $('#scanForm')?.elements.namedItem('token');
+        if (input) input.value = decodedText;
         try { await html5Scanner.stop(); await html5Scanner.clear(); } catch {}
         html5Scanner = null;
-        box.classList.add('hidden');
-        startBtn.disabled = false;
-        startBtn.textContent = '▦ Scan using camera';
+        box?.classList.add('hidden');
+        if (startBtn) { startBtn.disabled = false; startBtn.textContent = '▦ Scan using camera'; }
         setCameraHelp('');
-        $('#scanForm').requestSubmit();
+        $('#scanForm')?.requestSubmit();
       },
       () => {}
     );
-    startBtn.disabled = false;
-    startBtn.textContent = 'Stop camera scanner';
+    if (startBtn) { startBtn.disabled = false; startBtn.textContent = 'Stop camera scanner'; }
     setCameraHelp("Point the camera at the participant's QR code.");
   } catch (err) {
     html5Scanner = null;
-    box.classList.add('hidden');
-    startBtn.disabled = false;
-    startBtn.textContent = '▦ Scan using camera';
-
+    box?.classList.add('hidden');
+    if (startBtn) { startBtn.disabled = false; startBtn.textContent = '▦ Scan using camera'; }
     const name = err && err.name ? String(err.name) : '';
     let message = 'Camera could not start. Paste the QR token instead.';
-    if(name === 'NotAllowedError' || name === 'PermissionDeniedError'){
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
       message = 'Camera permission was denied. Allow camera access in your browser, or paste the QR token instead.';
-    } else if(name === 'NotFoundError' || name === 'DevicesNotFoundError'){
+    } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
       message = 'No camera was found on this device. Paste the QR token instead.';
-    } else if(name === 'NotReadableError' || name === 'TrackStartError'){
+    } else if (name === 'NotReadableError' || name === 'TrackStartError') {
       message = 'The camera is in use by another app. Close other apps and try again, or paste the QR token.';
-    } else if(name === 'OverconstrainedError'){
+    } else if (name === 'OverconstrainedError') {
       message = 'The camera does not support the required settings. Paste the QR token instead.';
     }
     setCameraHelp(message, true);
@@ -1001,8 +1206,8 @@ function bindNotificationElements() {
 
   document.addEventListener('click', (e) => {
     if (!n.state.panelOpen) return;
-    if (n.els.panel && n.els.panel.contains(e.target)) return;
-    if (n.els.btn && n.els.btn.contains(e.target)) return;
+    if (n.els.panel?.contains(e.target)) return;
+    if (n.els.btn?.contains(e.target)) return;
     closeNotificationPanel();
   });
 
@@ -1050,8 +1255,8 @@ function onLoggedOut() {
   n.state.seenIds = new Set();
   n.state.firstFetchDone = false;
   stopNotificationPolling();
-  if (n.els.panel) n.els.panel.classList.add('hidden');
-  if (n.els.btn) n.els.btn.setAttribute('aria-expanded', 'false');
+  n.els.panel?.classList.add('hidden');
+  n.els.btn?.setAttribute('aria-expanded', 'false');
   if (n.els.markAll) n.els.markAll.hidden = false;
   renderNotifications();
   renderNotificationBadge();
@@ -1153,10 +1358,6 @@ function stopNotificationPolling() {
     window.clearInterval(n.state.pollTimer);
     n.state.pollTimer = null;
   }
-  if (n.state.firstTimer) {
-    window.clearTimeout(n.state.firstTimer);
-    n.state.firstTimer = null;
-  }
 }
 
 function openNotificationPanel() {
@@ -1165,7 +1366,7 @@ function openNotificationPanel() {
   if (!n.state.authenticated) return;
   n.state.panelOpen = true;
   n.els.panel.classList.remove('hidden');
-  if (n.els.btn) n.els.btn.setAttribute('aria-expanded', 'true');
+  n.els.btn?.setAttribute('aria-expanded', 'true');
   if (n.state.available) refreshNotifications();
 }
 
@@ -1174,7 +1375,7 @@ function closeNotificationPanel() {
   if (!n.els.panel) return;
   n.state.panelOpen = false;
   n.els.panel.classList.add('hidden');
-  if (n.els.btn) n.els.btn.setAttribute('aria-expanded', 'false');
+  n.els.btn?.setAttribute('aria-expanded', 'false');
 }
 
 function toggleNotificationPanel() {
