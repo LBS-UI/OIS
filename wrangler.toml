@@ -7,7 +7,7 @@
 #   - The functions/ directory will be picked up automatically
 #   - Do NOT set a Deploy command of "npx wrangler deploy"
 
-name = "nextgen-smart-classroom"
+name = "ois"
 main = "worker/src/index.js"
 compatibility_date = "2024-11-01"
 
