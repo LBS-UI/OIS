@@ -7,7 +7,7 @@
 #   - The functions/ directory will be picked up automatically
 #   - Do NOT set a Deploy command of "npx wrangler deploy"
 
-name = "nextgen-smart-classroom"
+name = "ois"
 main = "worker/src/index.js"
 compatibility_date = "2024-11-01"
 
@@ -20,4 +20,4 @@ binding = "DB"
 database_name = "nextgen-smart-classroom"
 # Replace with your real D1 database ID after creating it in the dashboard
 # or via: npx wrangler d1 create nextgen-smart-classroom
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "a7b82648-3af2-4a67-8125-c7edadedada8"
