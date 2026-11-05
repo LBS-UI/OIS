@@ -3971,9 +3971,13 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
     <b id="offlinePanelTitle">Offline Workspace</b>
     <button type="button" id="closeOfflinePanel" aria-label="Close">×</button>
   </div>
-  <p id="offlinePanelNote" class="muted">Changes made offline are pending and have not been saved to the central database yet.</p>
+  <p id="offlineCounts" class="muted" style="font-size:12px;margin:4px 0">Pending: <b>0</b> · Syncing: <b>0</b> · Synced: <b>0</b> · Failed: <b>0</b></p>
+  <p id="offlinePanelNote" class="muted">Changes made offline are pending and have not been confirmed by the server yet.</p>
   <ul id="offlineQueueList" class="offline-queue-list"></ul>
-  <button type="button" class="btn primary full" id="syncNowBtn">Sync now</button>
+  <div style="display:flex;gap:8px;margin-top:8px">
+    <button type="button" class="btn primary" id="syncNowBtn" style="flex:1">Sync now</button>
+    <button type="button" class="btn secondary" id="exportQueueBtn" style="flex:1">Export pending</button>
+  </div>
 </div>
 <div id="toast" class="toast" role="status"></div>
 

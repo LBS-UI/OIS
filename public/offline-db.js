@@ -1,6 +1,6 @@
 /* NextGen Smart Classroom — IndexedDB offline queue and record cache */
 const DB_NAME = 'ngsc-offline';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -15,24 +15,35 @@ function openDb() {
       if (!db.objectStoreNames.contains('records')) {
         db.createObjectStore('records', { keyPath: 'id' });
       }
+      if (!db.objectStoreNames.contains('meta')) {
+        db.createObjectStore('meta', { keyPath: 'key' });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
 
-async function withStore(storeName, mode, fn) {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, mode);
-    const store = tx.objectStore(storeName);
-    const result = fn(store);
-    tx.oncomplete = () => resolve(result);
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
 const OfflineDB = {
+  async getDeviceId() {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('meta', 'readwrite');
+      const store = tx.objectStore('meta');
+      const req = store.get('deviceId');
+      req.onsuccess = () => {
+        if (req.result && req.result.value) {
+          resolve(req.result.value);
+        } else {
+          const id = 'dev-' + crypto.randomUUID();
+          store.put({ key: 'deviceId', value: id });
+          tx.oncomplete = () => resolve(id);
+        }
+      };
+      req.onerror = () => reject(req.error);
+    });
+  },
+
   async addQueueItem(item) {
     const db = await openDb();
     return new Promise((resolve, reject) => {
@@ -95,14 +106,9 @@ const OfflineDB = {
     });
   },
 
-  async findCachedByPc(pc) {
-    const all = await this.getCachedRecords();
-    return all.filter((r) => r.pcNumber === pc);
-  },
-
-  async findCachedByToken(token) {
-    const all = await this.getCachedRecords();
-    return all.find((r) => r.qrToken === token) || null;
+  async exportPending() {
+    const items = await this.getQueue();
+    return items.filter(i => i.status === 'pending' || i.status === 'failed' || i.status === 'conflict');
   }
 };
 

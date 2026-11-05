@@ -1741,9 +1741,11 @@ function uuidLocal() {
 
 async function enqueue(type, data) {
   if (!window.OfflineDB) return null;
+  const deviceId = await OfflineDB.getDeviceId();
   const item = {
     id: uuidLocal(),
     type,
+    deviceId,
     recordId: data.recordId || null,
     payload: data.payload || null,
     purpose: data.purpose || null,
@@ -1757,31 +1759,39 @@ async function enqueue(type, data) {
   };
   await OfflineDB.addQueueItem(item);
   await refreshQueueUI();
-  toast('Saved offline — will sync when connected');
+  toast('Queued offline — not yet saved to the central database');
   return item;
 }
 
 async function refreshQueueUI() {
   if (!window.OfflineDB) return;
   const items = await OfflineDB.getQueue();
-  const pending = items.filter(i => i.status === 'pending' || i.status === 'failed' || i.status === 'conflict');
+  const counts = { pending: 0, syncing: 0, synced: 0, failed: 0, conflict: 0 };
+  items.forEach(i => { if (counts[i.status] !== undefined) counts[i.status]++; });
+  const active = counts.pending + counts.failed + counts.conflict;
   const badge = $('#queueBadge');
   if (badge) {
-    badge.textContent = pending.length + ' pending';
-    badge.classList.toggle('hidden', pending.length === 0);
+    badge.textContent = active + ' pending';
+    badge.classList.toggle('hidden', active === 0);
+  }
+  const countsEl = $('#offlineCounts');
+  if (countsEl) {
+    countsEl.innerHTML = `Pending: <b>${counts.pending}</b> · Syncing: <b>${counts.syncing}</b> · Synced: <b>${counts.synced}</b> · Failed: <b>${counts.failed + counts.conflict}</b>`;
   }
   const list = $('#offlineQueueList');
   if (list) {
     list.innerHTML = items.length
-      ? items.map(i => `<li><span>${esc(i.type)} · ${esc(i.recordId || 'new')}</span><span class="offline-status ${esc(i.status)}">${esc(i.status)}</span></li>`).join('')
+      ? items.map(i => `<li><span>${esc(i.type)} · ${esc((i.recordId || 'new').slice(0, 8))}</span><span class="offline-status ${esc(i.status)}" title="${esc(i.lastError || '')}">${esc(i.status)}</span></li>`).join('')
       : '<li><span>No queued changes</span></li>';
   }
   const note = $('#offlinePanelNote');
   if (note) {
-    note.textContent = pending.length
-      ? pending.length + ' change(s) pending. They have not been saved to the central database yet.'
+    note.textContent = active
+      ? active + ' change(s) are still local and have not been confirmed by the server.'
       : 'No pending offline changes.';
   }
+  const title = $('#offlinePanelTitle');
+  if (title) title.textContent = navigator.onLine ? 'Online Workspace' : 'Offline Workspace';
 }
 
 async function syncQueue() {
@@ -1877,5 +1887,16 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   $('#closeOfflinePanel')?.addEventListener('click', () => $('#offlinePanel')?.classList.add('hidden'));
   $('#syncNowBtn')?.addEventListener('click', () => syncQueue());
+  $('#exportQueueBtn')?.addEventListener('click', async () => {
+    if (!window.OfflineDB) return;
+    const pending = await OfflineDB.exportPending();
+    if (!pending.length) { toast('No pending records to export'); return; }
+    const blob = new Blob([JSON.stringify(pending, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'ngsc-pending-' + new Date().toISOString().slice(0, 10) + '.json';
+    a.click();
+    toast('Pending records exported');
+  });
   refreshQueueUI();
 });
