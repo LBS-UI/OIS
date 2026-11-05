@@ -240,7 +240,240 @@ export default {
     // Serve static assets for all non-API routes
     if (!path.startsWith('/api/')) {
       if (env.ASSETS) return env.ASSETS.fetch(request);
-  
+      return fail('Not found.', 404);
+    }
+
+    // ---------- Public PC Number lookup (read-only, never creates) ----------
+    if (path === '/api/lookup-pc' && method === 'GET') {
+      const pc = cleanString(url.searchParams.get('pc'), 40);
+      if (!pc) return fail('PC Number is required.');
+      const { results = [] } = await env.DB.prepare(
+        'SELECT * FROM records WHERE pc_number = ? ORDER BY created_at DESC'
+      ).bind(pc).all();
+      if (!results.length) return fail('No record found for that PC Number.', 404);
+      return json({ records: results.map(mapRecord) });
+    }
+
+
+    // ---------- Public record deletion (no login required) ----------
+    const publicDeleteMatch = path.match(/^\/api\/records\/([^/]+)$/);
+    if (publicDeleteMatch && method === 'DELETE') {
+      const id = decodeURIComponent(publicDeleteMatch[1]);
+      try {
+        const result = await env.DB.prepare('DELETE FROM records WHERE id = ?').bind(id).run();
+        if (!result.meta.changes) return fail('Record not found.', 404);
+        return json({ ok: true });
+      } catch (e) {
+        return fail('Could not delete the record.', 500);
+      }
+    }
+
+    // ---------- Authenticated endpoints ----------
+    const auth = await requireUser(request, env);
+    if (auth.error) {
+      return fail(
+        auth.error,
+        auth.error === 'Authentication required.' ? 401 : 503
+      );
+    }
+    const user = auth.user;
+
+    if (path === '/api/me' && method === 'GET') {
+      return json({ ok: true, user: { username: user } });
+    }
+
+    if (path === '/api/records' && method === 'GET') {
+      const { results = [] } = await env.DB.prepare(
+        'SELECT * FROM records ORDER BY created_at DESC'
+      ).all();
+      return json({ records: results.map(mapRecord) });
+    }
+
+    if (path === '/api/records' && method === 'POST') {
+      let body, data;
+      try {
+        body = await bodyJson(request);
+        data = normalize(body);
+      } catch (e) {
+        return fail(e.message);
+      }
+      const id = uuid();
+      const qrToken = uuid().replace(/-/g, '') + uuid().replace(/-/g, '').slice(0, 16);
+      const ts = now();
+      try {
+        await env.DB.prepare(
+          `INSERT INTO records (
+            id, qr_token, category, pc_number, full_name, grade, section, school,
+            office, position, pre_test, post_test, feedback, created_at, updated_at,
+            created_by, updated_by
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+          .bind(
+            id,
+            qrToken,
+            data.category,
+            data.pcNumber,
+            data.fullName,
+            data.grade,
+            data.section,
+            data.school,
+            data.office,
+            data.position,
+            data.preTest,
+            data.postTest,
+            data.feedback,
+            ts,
+            ts,
+            user,
+            user
+          )
+          .run();
+        const r = await env.DB.prepare('SELECT * FROM records WHERE id = ?')
+          .bind(id)
+          .first();
+        return json({ record: mapRecord(r) }, 201);
+      } catch (e) {
+        if (String(e.message).includes('UNIQUE')) {
+          return fail('That PC Number is already registered in this category.', 409);
+        }
+        return fail('Could not save the record.', 500);
+      }
+    }
+
+    const recordMatch = path.match(/^\/api\/records\/([^/]+)$/);
+
+    if (recordMatch && method === 'DELETE') {
+      const id = decodeURIComponent(recordMatch[1]);
+      try {
+        const result = await env.DB.prepare('DELETE FROM records WHERE id = ?')
+          .bind(id)
+          .run();
+        if (!result.meta.changes) return fail('Record not found.', 404);
+        return json({ ok: true });
+      } catch (e) {
+        return fail('Could not delete the record.', 500);
+      }
+    }
+
+    if (recordMatch && method === 'PATCH') {
+      const id = decodeURIComponent(recordMatch[1]);
+      let body, data;
+      try {
+        body = await bodyJson(request);
+        data = normalize(body);
+      } catch (e) {
+        return fail(e.message);
+      }
+      const ts = now();
+      try {
+        const result = await env.DB.prepare(
+          `UPDATE records SET
+            category = ?, pc_number = ?, full_name = ?, grade = ?, section = ?,
+            school = ?, office = ?, position = ?, pre_test = ?, post_test = ?,
+            feedback = ?, updated_at = ?, updated_by = ?
+          WHERE id = ?`
+        )
+          .bind(
+            data.category,
+            data.pcNumber,
+            data.fullName,
+            data.grade,
+            data.section,
+            data.school,
+            data.office,
+            data.position,
+            data.preTest,
+            data.postTest,
+            data.feedback,
+            ts,
+            user,
+            id
+          )
+          .run();
+        if (!result.meta.changes) return fail('Record not found.', 404);
+        const r = await env.DB.prepare('SELECT * FROM records WHERE id = ?')
+          .bind(id)
+          .first();
+        return json({ record: mapRecord(r) });
+      } catch (e) {
+        if (String(e.message).includes('UNIQUE')) {
+          return fail('That PC Number is already registered in this category.', 409);
+        }
+        return fail('Could not update the record.', 500);
+      }
+    }
+
+
+    // ---------- Score-only update (authenticated, does not change identity fields) ----------
+    const scoreMatch = path.match(/^\/api\/records\/([^/]+)\/scores$/);
+    if (scoreMatch && method === 'PATCH') {
+      const id = decodeURIComponent(scoreMatch[1]);
+      let body;
+      try { body = await bodyJson(request); } catch (e) { return fail(e.message); }
+
+      const preTest = cleanScore(body.preTest);
+      const postTest = cleanScore(body.postTest);
+      if (Number.isNaN(preTest) || Number.isNaN(postTest)) {
+        return fail('Scores must be non-negative numbers.');
+      }
+
+      const existing = await env.DB.prepare('SELECT * FROM records WHERE id = ?').bind(id).first();
+      if (!existing) return fail('Record not found.', 404);
+
+      const ts = now();
+      try {
+        await env.DB.prepare(
+          'UPDATE records SET pre_test = ?, post_test = ?, updated_at = ?, updated_by = ? WHERE id = ?'
+        ).bind(preTest, postTest, ts, user, id).run();
+
+        // Audit log (best-effort)
+        try {
+          await env.DB.prepare(
+            `INSERT INTO audit_logs (id, action, record_id, actor, previous_pre_test, previous_post_test, new_pre_test, new_post_test, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).bind(uuid(), 'score_update', id, user, existing.pre_test, existing.post_test, preTest, postTest, ts).run();
+        } catch (_) { /* table may not exist yet; ignore */ }
+
+        const updated = await env.DB.prepare('SELECT * FROM records WHERE id = ?').bind(id).first();
+        return json({ record: mapRecord(updated) });
+      } catch (e) {
+        return fail('Could not update scores.', 500);
+      }
+    }
+
+    const scanMatch = path.match(/^\/api\/records\/([^/]+)\/scan$/);
+    if (scanMatch && method === 'POST') {
+      const id = decodeURIComponent(scanMatch[1]);
+      const r = await env.DB.prepare('SELECT id FROM records WHERE id = ?')
+        .bind(id)
+        .first();
+      if (!r) return fail('Record not found.', 404);
+      let purpose = 'staff_lookup';
+      try {
+        const body = await bodyJson(request);
+        purpose = cleanString(body.purpose, 60) || purpose;
+      } catch {
+        /* optional body */
+      }
+      await env.DB.prepare(
+        'INSERT INTO scan_events (id, record_id, scanned_at, scanned_by, purpose) VALUES (?, ?, ?, ?, ?)'
+      )
+        .bind(uuid(), id, now(), user, purpose)
+        .run();
+      return json({ ok: true });
+    }
+
+    if (path === '/api/lookup' && method === 'GET') {
+      const token = cleanString(url.searchParams.get('token'), 100);
+      if (!token) return fail('QR token is required.');
+      const r = await env.DB.prepare('SELECT * FROM records WHERE qr_token = ?')
+        .bind(token)
+        .first();
+      if (!r) return fail('Record not found.', 404);
+      return json({ record: mapRecord(r) });
+    }
+
+
     // ---------- Offline sync endpoint (authenticated, idempotent) ----------
     if (path === '/api/sync' && method === 'POST') {
       let body;
