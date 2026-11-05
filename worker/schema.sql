@@ -48,3 +48,18 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+
+-- Audit log for score changes and other sensitive actions
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  record_id TEXT,
+  actor TEXT NOT NULL,
+  previous_pre_test REAL,
+  previous_post_test REAL,
+  new_pre_test REAL,
+  new_post_test REAL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_record_id ON audit_logs(record_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);

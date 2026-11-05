@@ -198,8 +198,7 @@ async function checkSession() {
     setConnection(true, 'Open registration');
     showApp();
     navigate('register');
-    // Hide admin-only nav items for public visitors
-    $$('.nav-link[data-page="records"], .nav-link[data-page="scan"]').forEach(el => el.style.display = 'none');
+    await loadRecords();
     const logout = $('#logoutBtn');
     if (logout) logout.classList.add('hidden');
   }
@@ -209,7 +208,7 @@ function navigate(page) {
   const recModal = $('#recordModal'); if (recModal?.open) recModal.close();
   const qrModal = $('#qrModal'); if (qrModal?.open) qrModal.close();
 
-  const pages = ['home','register','records','scan'];
+  const pages = ['home','register','records','scores','scan'];
   if (!pages.includes(page)) page = 'home';
 
   $$('.page').forEach(el => el.classList.toggle('hidden', el.id !== `page-${page}`));
@@ -220,6 +219,7 @@ function navigate(page) {
     home: 'Overview',
     register: state.editingId ? 'Edit registration' : 'Registration',
     records: 'Records & reports',
+    scores: 'Edit scores',
     scan: 'QR lookup'
   })[page];
 
@@ -1540,3 +1540,118 @@ function formatNotificationTime(iso) {
 }
 
 bindNotificationElements();
+
+/* ============================================================
+   PC NUMBER LOOKUP & SCORE EDITING
+   ============================================================ */
+let scoreEditRecord = null;
+let scoreSaveInFlight = false;
+
+function renderScoreEditor(record) {
+  const box = $('#scoreEditor');
+  if (!box) return;
+  if (!record) {
+    box.innerHTML = `<div class="empty-state"><span class="empty-symbol">◎</span><b>Waiting for a PC Number</b><p>The matching student and scores will appear here.</p></div>`;
+    return;
+  }
+  scoreEditRecord = record;
+  box.innerHTML = `
+    <div class="record-detail">
+      <div class="section-kicker">STUDENT FOUND</div>
+      <h3>${esc(record.fullName)}</h3>
+      <p class="muted">${categoryChip(record.category)} · PC ${esc(record.pcNumber)}</p>
+      <div class="detail-grid" style="margin-bottom:16px">
+        <div class="detail-item"><small>Section</small><b>${esc(record.section || '—')}</b></div>
+        <div class="detail-item"><small>Grade</small><b>${esc(record.grade || '—')}</b></div>
+        <div class="detail-item"><small>School</small><b>${esc(record.school || '—')}</b></div>
+      </div>
+      <form id="scoreForm">
+        <div class="form-grid">
+          <label>Pre-test score
+            <input name="preTest" type="number" min="0" step="any" value="${record.preTest ?? ''}" placeholder="Current: ${record.preTest ?? 'none'}">
+          </label>
+          <label>Post-test score
+            <input name="postTest" type="number" min="0" step="any" value="${record.postTest ?? ''}" placeholder="Current: ${record.postTest ?? 'none'}">
+          </label>
+        </div>
+        <div class="form-actions" style="margin-top:14px;display:flex;gap:8px">
+          <button class="btn primary" type="submit" id="saveScoresBtn">Save changes</button>
+          <button class="btn secondary" type="button" id="cancelScoresBtn">Cancel</button>
+        </div>
+        <p id="scoreMessage" class="form-message" role="status"></p>
+      </form>
+    </div>`;
+
+  $('#cancelScoresBtn')?.addEventListener('click', () => {
+    renderScoreEditor(record); // reset to original values
+    const m = $('#scoreMessage');
+    if (m) { m.textContent = 'Changes discarded.'; m.className = 'form-message'; }
+  });
+
+  $('#scoreForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (scoreSaveInFlight) return;
+    const msg = $('#scoreMessage');
+    const pre = e.target.elements.preTest.value.trim();
+    const post = e.target.elements.postTest.value.trim();
+    const preN = pre === '' ? null : Number(pre);
+    const postN = post === '' ? null : Number(post);
+    if ((pre !== '' && (!Number.isFinite(preN) || preN < 0)) ||
+        (post !== '' && (!Number.isFinite(postN) || postN < 0))) {
+      if (msg) { msg.textContent = 'Scores must be non-negative numbers.'; msg.className = 'form-message'; }
+      return;
+    }
+    scoreSaveInFlight = true;
+    const btn = $('#saveScoresBtn');
+    if (btn) btn.disabled = true;
+    if (msg) { msg.textContent = 'Saving…'; msg.className = 'form-message'; }
+    try {
+      const result = await api(`/records/${encodeURIComponent(record.id)}/scores`, {
+        method: 'PATCH',
+        body: JSON.stringify({ preTest: preN, postTest: postN })
+      });
+      scoreEditRecord = result.record;
+      renderScoreEditor(result.record);
+      const m2 = $('#scoreMessage');
+      if (m2) { m2.textContent = 'Scores updated successfully.'; m2.className = 'form-message success'; }
+      toast('Scores saved');
+      await loadRecords();
+    } catch (err) {
+      if (msg) {
+        msg.textContent = err.status === 401
+          ? 'You must be signed in as staff to change scores.'
+          : err.message;
+        msg.className = 'form-message';
+      }
+      if (err.status === 401) {
+        toast('Sign in required to edit scores');
+      }
+    } finally {
+      scoreSaveInFlight = false;
+      if (btn) btn.disabled = false;
+    }
+  });
+}
+
+$('#pcLookupForm')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const pc = new FormData(e.currentTarget).get('pc').trim();
+  const msg = $('#pcLookupMessage');
+  if (!pc) { if (msg) msg.textContent = 'Enter a PC Number.'; return; }
+  if (msg) { msg.textContent = 'Searching…'; msg.className = 'form-message'; }
+  try {
+    const result = await api(`/lookup-pc?pc=${encodeURIComponent(pc)}`);
+    const rec = (result.records || [])[0];
+    if (!rec) throw new Error('No record found.');
+    if (msg) { msg.textContent = 'Student found.'; msg.className = 'form-message success'; }
+    renderScoreEditor(rec);
+  } catch (err) {
+    if (msg) {
+      msg.textContent = err.status === 404
+        ? 'No record matches that PC Number.'
+        : err.message;
+      msg.className = 'form-message';
+    }
+    renderScoreEditor(null);
+  }
+});

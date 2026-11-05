@@ -379,6 +379,27 @@ export default {
       }
     }
 
+
+    // ---------- Public records list (for overview and records page) ----------
+    if (path === '/api/records' && method === 'GET') {
+      const { results = [] } = await env.DB.prepare(
+        'SELECT * FROM records ORDER BY created_at DESC'
+      ).all();
+      return json({ records: results.map(mapRecord) });
+    }
+
+
+    // ---------- Public PC Number lookup (read-only, never creates) ----------
+    if (path === '/api/lookup-pc' && method === 'GET') {
+      const pc = cleanString(url.searchParams.get('pc'), 40);
+      if (!pc) return fail('PC Number is required.');
+      const { results = [] } = await env.DB.prepare(
+        'SELECT * FROM records WHERE pc_number = ? ORDER BY created_at DESC'
+      ).bind(pc).all();
+      if (!results.length) return fail('No record found for that PC Number.', 404);
+      return json({ records: results.map(mapRecord) });
+    }
+
     // ---------- Authenticated endpoints ----------
     const auth = await requireUser(request, env);
     if (auth.error) {
@@ -511,6 +532,44 @@ export default {
           return fail('That PC Number is already registered in this category.', 409);
         }
         return fail('Could not update the record.', 500);
+      }
+    }
+
+
+    // ---------- Score-only update (authenticated, does not change identity fields) ----------
+    const scoreMatch = path.match(/^\/api\/records\/([^/]+)\/scores$/);
+    if (scoreMatch && method === 'PATCH') {
+      const id = decodeURIComponent(scoreMatch[1]);
+      let body;
+      try { body = await bodyJson(request); } catch (e) { return fail(e.message); }
+
+      const preTest = cleanScore(body.preTest);
+      const postTest = cleanScore(body.postTest);
+      if (Number.isNaN(preTest) || Number.isNaN(postTest)) {
+        return fail('Scores must be non-negative numbers.');
+      }
+
+      const existing = await env.DB.prepare('SELECT * FROM records WHERE id = ?').bind(id).first();
+      if (!existing) return fail('Record not found.', 404);
+
+      const ts = now();
+      try {
+        await env.DB.prepare(
+          'UPDATE records SET pre_test = ?, post_test = ?, updated_at = ?, updated_by = ? WHERE id = ?'
+        ).bind(preTest, postTest, ts, user, id).run();
+
+        // Audit log (best-effort)
+        try {
+          await env.DB.prepare(
+            `INSERT INTO audit_logs (id, action, record_id, actor, previous_pre_test, previous_post_test, new_pre_test, new_post_test, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).bind(uuid(), 'score_update', id, user, existing.pre_test, existing.post_test, preTest, postTest, ts).run();
+        } catch (_) { /* table may not exist yet; ignore */ }
+
+        const updated = await env.DB.prepare('SELECT * FROM records WHERE id = ?').bind(id).first();
+        return json({ record: mapRecord(updated) });
+      } catch (e) {
+        return fail('Could not update scores.', 500);
       }
     }
 

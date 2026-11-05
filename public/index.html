@@ -3140,6 +3140,11 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
   white-space: nowrap;
 }
 [data-theme="dark"] .records-updated { color: var(--muted); }
+
+/* Score editor */
+#scoreEditor .record-detail{padding:8px 4px}
+#scoreEditor .form-grid{grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:600px){#scoreEditor .form-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -3183,6 +3188,10 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
       Registration
     </button>
 
+    <button class="nav-link" data-page="scores">
+      <span class="icon">✎</span>
+      <span>Edit scores</span>
+    </button>
     <button class="nav-link" data-page="records">
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>
       Records &amp; reports
@@ -3843,6 +3852,38 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
             <button type="button" class="btn primary" id="qrModalDownload">Download PNG</button>
           </div>
         </dialog>
+      </div>
+
+
+      <!-- ---------- EDIT SCORES ---------- -->
+      <div id="page-scores" class="page hidden">
+        <div class="page-intro">
+          <div>
+            <div class="section-kicker">ASSESSMENT SCORES</div>
+            <h2>Find a student by PC Number</h2>
+            <p class="muted">Look up an existing registration and update pre-test or post-test scores. Searching never creates a new record.</p>
+          </div>
+        </div>
+
+        <div class="scan-layout">
+          <form id="pcLookupForm" class="panel scan-card">
+            <span class="scan-icon">✎</span>
+            <h3>PC Number lookup</h3>
+            <label>PC Number
+              <input name="pc" required maxlength="40" placeholder="Enter PC Number" autocomplete="off">
+            </label>
+            <button class="btn primary full" type="submit">Find student →</button>
+            <p id="pcLookupMessage" class="form-message" role="status"></p>
+          </form>
+
+          <article class="panel" id="scoreEditor">
+            <div class="empty-state">
+              <span class="empty-symbol">◎</span>
+              <b>Waiting for a PC Number</b>
+              <p>The matching student and scores will appear here.</p>
+            </div>
+          </article>
+        </div>
       </div>
 
       <!-- ---------- QR LOOKUP ---------- -->
