@@ -193,13 +193,15 @@ async function checkSession() {
     showApp();
     await loadRecords();
   } catch (e) {
-    state.apiReady = false;
-    setConnection(false, 'API not configured');
-    showLogin();
-    if (e.status === 401) {
-      const m = $('#loginMessage');
-      if (m) m.textContent = 'Please sign in to continue.';
-    }
+    // Not logged in: show the public registration form directly
+    state.apiReady = true;
+    setConnection(true, 'Open registration');
+    showApp();
+    navigate('register');
+    // Hide admin-only nav items for public visitors
+    $$('.nav-link[data-page="records"], .nav-link[data-page="scan"]').forEach(el => el.style.display = 'none');
+    const logout = $('#logoutBtn');
+    if (logout) logout.classList.add('hidden');
   }
 }
 
@@ -495,7 +497,7 @@ async function loadRecords() {
     renderHome();
     updateRecordsUpdatedIndicator();
   } catch (e) {
-    if (e.status === 401) { showLogin(); return; }
+    if (e.status === 401) { return; } // public visitors don't need records access
     state.apiReady = false;
     setConnection(false, 'API unavailable');
     if (tableEl) {

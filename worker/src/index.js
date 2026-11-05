@@ -341,6 +341,44 @@ export default {
       }
     }
 
+
+    // ---------- Public registration (no login required) ----------
+    if (path === '/api/records' && method === 'POST') {
+      let body, data;
+      try {
+        body = await bodyJson(request);
+        data = normalize(body);
+      } catch (e) {
+        return fail(e.message);
+      }
+      const id = uuid();
+      const qrToken = uuid().replace(/-/g, '') + uuid().replace(/-/g, '').slice(0, 16);
+      const ts = now();
+      const createdBy = 'public';
+      try {
+        await env.DB.prepare(
+          `INSERT INTO records (
+            id, qr_token, category, pc_number, full_name, grade, section, school,
+            office, position, pre_test, post_test, feedback, created_at, updated_at,
+            created_by, updated_by
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+          .bind(
+            id, qrToken, data.category, data.pcNumber, data.fullName,
+            data.grade, data.section, data.school, data.office, data.position,
+            data.preTest, data.postTest, data.feedback, ts, ts, createdBy, createdBy
+          )
+          .run();
+        const r = await env.DB.prepare('SELECT * FROM records WHERE id = ?').bind(id).first();
+        return json({ record: mapRecord(r) }, 201);
+      } catch (e) {
+        if (String(e.message).includes('UNIQUE')) {
+          return fail('That PC Number is already registered in this category.', 409);
+        }
+        return fail('Could not save the record.', 500);
+      }
+    }
+
     // ---------- Authenticated endpoints ----------
     const auth = await requireUser(request, env);
     if (auth.error) {
