@@ -615,8 +615,13 @@ function renderRecords() {
     return;
   }
 
-  const rows = pageRecords.map(recordRow).join('');
-  tableEl.innerHTML = `<table class="data-table"><thead><tr><th>PC number / type</th><th>Participant</th><th>Pre-test</th><th>Post-test</th><th>Created</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table>`;
+  const startIdx = (state.recordPage - 1) * (state.pageSize || 25) + 1;
+  const rows = pageRecords.map((r, i) => recordRow(r, startIdx + i)).join('');
+  tableEl.innerHTML = `<div class="sheet-wrap"><table class="sheet"><thead><tr>
+    <th class="row-num">#</th><th>PC Number</th><th>Full Name</th><th>Section</th>
+    <th>Pre-test</th><th>Post-test</th><th>Category</th><th>Date</th><th>Actions</th>
+  </tr></thead><tbody>${rows}</tbody></table></div>`;
+  bindSheetEditing();
 
   $$('[data-view]').forEach(b => b.addEventListener('click', () => viewRecord(b.dataset.view)));
   $$('[data-edit]').forEach(b => b.addEventListener('click', () => editRecord(b.dataset.edit)));
@@ -634,24 +639,94 @@ function renderRecords() {
   renderPagination(totalPages);
 }
 
-function recordRow(r) {
-  const name = esc(r.fullName);
-  const detail = r.category === 'student'
-    ? [r.grade, r.section, r.school].filter(Boolean).join(' · ')
-    : [r.office, r.position].filter(Boolean).join(' · ');
-  return `<tr>
-    <td><b>${esc(r.pcNumber)}</b><small>${categoryChip(r.category)}</small></td>
-    <td><b>${name}</b><small>${esc(detail || '—')}</small></td>
-    <td>${r.preTest ?? '—'} <small>Pre-test</small></td>
-    <td>${r.postTest ?? '—'} <small>Post-test</small></td>
+function recordRow(r, idx) {
+  return `<tr data-id="${esc(r.id)}">
+    <td class="row-num">${idx}</td>
+    <td>${esc(r.pcNumber || '—')}</td>
+    <td title="${esc(r.fullName)}">${esc(r.fullName)}</td>
+    <td>${esc(r.section || r.office || '—')}</td>
+    <td class="cell-edit" data-field="preTest" data-id="${esc(r.id)}" tabindex="0">${r.preTest ?? ''}</td>
+    <td class="cell-edit" data-field="postTest" data-id="${esc(r.id)}" tabindex="0">${r.postTest ?? ''}</td>
+    <td>${categoryChip(r.category)}</td>
     <td>${esc(r.createdAt ? new Date(r.createdAt).toLocaleDateString() : '—')}</td>
-    <td><div class="row-actions">
+    <td class="actions">
       <button data-view="${esc(r.id)}">View</button>
-      <button data-edit="${esc(r.id)}">Edit</button>
       <button data-qr="${esc(r.id)}">QR</button>
       <button data-delete="${esc(r.id)}" class="danger">Delete</button>
-    </div></td>
+    </td>
   </tr>`;
+}
+
+function bindSheetEditing() {
+  $$('.cell-edit').forEach(cell => {
+    cell.addEventListener('click', () => startCellEdit(cell));
+    cell.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); startCellEdit(cell); }
+    });
+  });
+  $$('.sheet tbody tr').forEach(tr => {
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('button') || e.target.closest('input')) return;
+      $$('.sheet tbody tr').forEach(r => r.classList.remove('selected'));
+      tr.classList.add('selected');
+    });
+  });
+}
+
+function startCellEdit(cell) {
+  if (cell.querySelector('input')) return;
+  const original = cell.textContent.trim();
+  const field = cell.dataset.field;
+  const id = cell.dataset.id;
+  const input = document.createElement('input');
+  input.className = 'cell-input';
+  input.type = 'number';
+  input.min = '0';
+  input.step = 'any';
+  input.value = original;
+  cell.textContent = '';
+  cell.appendChild(input);
+  input.focus();
+  input.select();
+
+  const cancel = () => { cell.textContent = original; };
+  const save = async () => {
+    const val = input.value.trim();
+    const num = val === '' ? null : Number(val);
+    if (val !== '' && (!Number.isFinite(num) || num < 0)) {
+      toast('Score must be a non-negative number');
+      input.focus();
+      return;
+    }
+    cell.textContent = '…';
+    try {
+      const rec = state.records.find(r => r.id === id);
+      const payload = {
+        preTest: field === 'preTest' ? num : (rec?.preTest ?? null),
+        postTest: field === 'postTest' ? num : (rec?.postTest ?? null)
+      };
+      const result = await api('/records/' + encodeURIComponent(id) + '/scores', {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      });
+      const updated = result.record;
+      const idx = state.records.findIndex(r => r.id === id);
+      if (idx >= 0) state.records[idx] = updated;
+      cell.textContent = (field === 'preTest' ? updated.preTest : updated.postTest) ?? '';
+      toast('Score saved');
+    } catch (err) {
+      cell.textContent = original;
+      toast(err.status === 401 ? 'Sign in required to edit scores' : err.message);
+    }
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); save(); }
+    if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+  });
+  input.addEventListener('blur', () => {
+    if (cell.contains(input)) save();
+  });
 }
 
 function renderPagination(totalPages) {

@@ -3161,6 +3161,23 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
 .offline-status.synced{color:#159a77}
 .offline-status.failed,.offline-status.conflict{color:#c0392b}
 @media(max-width:600px){.offline-panel{right:8px;bottom:8px;width:calc(100vw - 16px)}}
+
+/* Spreadsheet-style records table */
+.sheet-wrap{overflow:auto;max-height:calc(100vh - 280px);border:1px solid #d0d7de;border-radius:4px;background:#fff}
+.sheet{width:100%;border-collapse:collapse;font-size:13px;min-width:720px}
+.sheet th{position:sticky;top:0;background:#f6f8fa;border:1px solid #d0d7de;padding:8px 10px;text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#57606a;z-index:2;white-space:nowrap}
+.sheet td{border:1px solid #e1e4e8;padding:6px 10px;vertical-align:middle;background:#fff}
+.sheet tbody tr:nth-child(even) td{background:#fafbfc}
+.sheet tbody tr:hover td{background:#f0f6ff}
+.sheet tbody tr.selected td{background:#ddf4ff}
+.sheet .row-num{color:#8b949e;text-align:right;width:42px;font-size:11px}
+.sheet .cell-edit{cursor:text;min-width:70px}
+.sheet .cell-edit:hover{outline:1px solid #0969da}
+.sheet input.cell-input{width:100%;border:1px solid #0969da;padding:2px 4px;font:inherit;background:#fff;box-shadow:0 0 0 2px rgba(9,105,218,.15)}
+.sheet .actions button{border:0;background:transparent;color:#0969da;font-size:11px;padding:2px 6px;cursor:pointer}
+.sheet .actions button.danger{color:#cf222e}
+.sheet .actions button:hover{text-decoration:underline}
+@media(max-width:700px){.sheet-wrap{max-height:calc(100vh - 220px)}}
 </style>
 </head>
 <body>
