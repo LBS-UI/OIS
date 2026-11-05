@@ -321,6 +321,15 @@ export default {
     }
 
 
+
+    // ---------- Public records list (for overview) ----------
+    if (path === '/api/records' && method === 'GET') {
+      const { results = [] } = await env.DB.prepare(
+        'SELECT * FROM records ORDER BY created_at DESC'
+      ).all();
+      return json({ records: results.map(mapRecord) });
+    }
+
     // ---------- Authenticated endpoints ----------
     const auth = await requireUser(request, env);
     if (auth.error) {

@@ -188,7 +188,7 @@ function showApp() {
 async function checkSession() {
   // Always show the app directly (no homepage / login wall)
   showApp();
-  navigate('register');
+  navigate('home');
   try {
     await api('/me');
     state.apiReady = true;
