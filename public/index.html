@@ -3272,7 +3272,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
     </header>
 
     <!-- ==================== PUBLIC LANDING / LOGIN ==================== -->
-    <section id="loginView" class="landing">
+    <section id="loginView" class="landing hidden">
 
       <header class="landing-header">
         <a class="landing-brand" href="#loginView">
@@ -3570,7 +3570,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
     <!-- ================== END PUBLIC LANDING ================== -->
 
     <!-- ==================== AUTHENTICATED APP ==================== -->
-    <section id="appView" class="hidden">
+    <section id="appView">
 
       <!-- ---------- OVERVIEW ---------- -->
       <div id="page-home" class="page">
@@ -4018,11 +4018,8 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
   if(!intro) return;
 
   var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  var seen = false;
-  try { seen = sessionStorage.getItem('ng-intro-seen') === '1'; } catch(e){}
-
-  // Skip entirely for returning visitors or reduced-motion users
-  if(seen || reduce){
+  // Always show intro on entry (reduced-motion users still see a short version)
+  if(reduce){
     intro.remove();
     return;
   }

@@ -186,22 +186,20 @@ function showApp() {
 }
 
 async function checkSession() {
+  // Always show the app directly (no homepage / login wall)
+  showApp();
+  navigate('register');
   try {
     await api('/me');
     state.apiReady = true;
     setConnection(true, 'Cloud connected');
-    showApp();
-    await loadRecords();
   } catch (e) {
-    // Not logged in: show the public registration form directly
     state.apiReady = true;
     setConnection(true, 'Open registration');
-    showApp();
-    navigate('register');
-    await loadRecords();
     const logout = $('#logoutBtn');
     if (logout) logout.classList.add('hidden');
   }
+  await loadRecords();
 }
 
 function navigate(page) {

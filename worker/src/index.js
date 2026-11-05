@@ -491,6 +491,20 @@ export default {
       return json({ records: results.map(mapRecord) });
     }
 
+
+    // ---------- Public record deletion (no login required) ----------
+    const publicDeleteMatch = path.match(/^\/api\/records\/([^/]+)$/);
+    if (publicDeleteMatch && method === 'DELETE') {
+      const id = decodeURIComponent(publicDeleteMatch[1]);
+      try {
+        const result = await env.DB.prepare('DELETE FROM records WHERE id = ?').bind(id).run();
+        if (!result.meta.changes) return fail('Record not found.', 404);
+        return json({ ok: true });
+      } catch (e) {
+        return fail('Could not delete the record.', 500);
+      }
+    }
+
     // ---------- Authenticated endpoints ----------
     const auth = await requireUser(request, env);
     if (auth.error) {
