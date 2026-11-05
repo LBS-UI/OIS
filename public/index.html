@@ -3145,6 +3145,22 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
 #scoreEditor .record-detail{padding:8px 4px}
 #scoreEditor .form-grid{grid-template-columns:1fr 1fr;gap:12px}
 @media(max-width:600px){#scoreEditor .form-grid{grid-template-columns:1fr}}
+
+/* Offline workspace */
+.queue-badge{border:0;background:#e1a342;color:#fff;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:700;cursor:pointer}
+.queue-badge.hidden{display:none}
+.offline-panel{position:fixed;right:16px;bottom:16px;width:320px;max-width:calc(100vw - 32px);background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 36px rgba(16,44,72,.15);padding:16px;z-index:90}
+.offline-panel.hidden{display:none}
+.offline-panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.offline-panel-head button{border:0;background:transparent;font-size:20px;cursor:pointer;color:#718194}
+.offline-queue-list{list-style:none;padding:0;margin:10px 0;max-height:200px;overflow:auto}
+.offline-queue-list li{padding:8px 0;border-bottom:1px solid var(--line);font-size:12px;display:flex;justify-content:space-between;gap:8px}
+.offline-status{font-weight:700;text-transform:uppercase;font-size:10px}
+.offline-status.pending{color:#e1a342}
+.offline-status.syncing{color:#2675d8}
+.offline-status.synced{color:#159a77}
+.offline-status.failed,.offline-status.conflict{color:#c0392b}
+@media(max-width:600px){.offline-panel{right:8px;bottom:8px;width:calc(100vw - 16px)}}
 </style>
 </head>
 <body>
@@ -3227,6 +3243,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
         </button>
 
         <span class="connection"><i id="connectionDot"></i><span id="connectionText">Checking connection</span></span>
+          <button id="queueBadge" class="queue-badge hidden" type="button" title="View offline queue">0 pending</button>
 
         <div class="notification-wrapper">
           <button id="notificationBtn" type="button" class="notification-btn" aria-label="Notifications" aria-haspopup="true" aria-expanded="false" aria-controls="notificationPanel">
@@ -3931,6 +3948,16 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
   </main>
 </div>
 
+
+<div id="offlinePanel" class="offline-panel hidden">
+  <div class="offline-panel-head">
+    <b id="offlinePanelTitle">Offline Workspace</b>
+    <button type="button" id="closeOfflinePanel" aria-label="Close">×</button>
+  </div>
+  <p id="offlinePanelNote" class="muted">Changes made offline are pending and have not been saved to the central database yet.</p>
+  <ul id="offlineQueueList" class="offline-queue-list"></ul>
+  <button type="button" class="btn primary full" id="syncNowBtn">Sync now</button>
+</div>
 <div id="toast" class="toast" role="status"></div>
 
 <script src="/qrcode.min.js"></script>
@@ -3938,6 +3965,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js"></script>
+<script src="/offline-db.js"></script>
 <script src="/app.js"></script>
 
 <!-- Theme toggle behaviour -->

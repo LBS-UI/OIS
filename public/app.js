@@ -1655,3 +1655,154 @@ $('#pcLookupForm')?.addEventListener('submit', async (e) => {
     renderScoreEditor(null);
   }
 });
+
+
+/* ============================================================
+   OFFLINE WORKSPACE — queue, cache, sync
+   ============================================================ */
+let offlineSyncing = false;
+
+function uuidLocal() {
+  return crypto.randomUUID ? crypto.randomUUID() : 'q-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+}
+
+async function enqueue(type, data) {
+  if (!window.OfflineDB) return null;
+  const item = {
+    id: uuidLocal(),
+    type,
+    recordId: data.recordId || null,
+    payload: data.payload || null,
+    purpose: data.purpose || null,
+    preTest: data.preTest,
+    postTest: data.postTest,
+    baseUpdatedAt: data.baseUpdatedAt || null,
+    createdAt: new Date().toISOString(),
+    status: 'pending',
+    attempts: 0,
+    lastError: null
+  };
+  await OfflineDB.addQueueItem(item);
+  await refreshQueueUI();
+  toast('Saved offline — will sync when connected');
+  return item;
+}
+
+async function refreshQueueUI() {
+  if (!window.OfflineDB) return;
+  const items = await OfflineDB.getQueue();
+  const pending = items.filter(i => i.status === 'pending' || i.status === 'failed' || i.status === 'conflict');
+  const badge = $('#queueBadge');
+  if (badge) {
+    badge.textContent = pending.length + ' pending';
+    badge.classList.toggle('hidden', pending.length === 0);
+  }
+  const list = $('#offlineQueueList');
+  if (list) {
+    list.innerHTML = items.length
+      ? items.map(i => `<li><span>${esc(i.type)} · ${esc(i.recordId || 'new')}</span><span class="offline-status ${esc(i.status)}">${esc(i.status)}</span></li>`).join('')
+      : '<li><span>No queued changes</span></li>';
+  }
+  const note = $('#offlinePanelNote');
+  if (note) {
+    note.textContent = pending.length
+      ? pending.length + ' change(s) pending. They have not been saved to the central database yet.'
+      : 'No pending offline changes.';
+  }
+}
+
+async function syncQueue() {
+  if (offlineSyncing || !navigator.onLine || !window.OfflineDB) return;
+  const items = await OfflineDB.getQueue();
+  const toSend = items.filter(i => i.status === 'pending' || i.status === 'failed');
+  if (!toSend.length) { await refreshQueueUI(); return; }
+
+  offlineSyncing = true;
+  for (const item of toSend) {
+    item.status = 'syncing';
+    item.attempts = (item.attempts || 0) + 1;
+    await OfflineDB.updateQueueItem(item);
+  }
+  await refreshQueueUI();
+
+  try {
+    const result = await api('/sync', { method: 'POST', body: JSON.stringify({ items: toSend }) });
+    const byId = {};
+    (result.results || []).forEach(r => { byId[r.id] = r; });
+    for (const item of toSend) {
+      const res = byId[item.id];
+      if (res && res.status === 'synced') {
+        item.status = 'synced';
+        item.lastError = null;
+      } else if (res && res.status === 'conflict') {
+        item.status = 'conflict';
+        item.lastError = res.error || 'Conflict';
+      } else {
+        item.status = 'failed';
+        item.lastError = (res && res.error) || 'Sync failed';
+      }
+      await OfflineDB.updateQueueItem(item);
+    }
+    toast('Offline changes synchronized');
+    await loadRecords();
+  } catch (err) {
+    for (const item of toSend) {
+      item.status = 'failed';
+      item.lastError = err.message || 'Network error';
+      await OfflineDB.updateQueueItem(item);
+    }
+    toast('Sync failed — will retry when online');
+  } finally {
+    offlineSyncing = false;
+    await refreshQueueUI();
+  }
+}
+
+// Cache records after successful load
+const _origLoadRecords = loadRecords;
+loadRecords = async function () {
+  await _origLoadRecords();
+  if (window.OfflineDB && state.records && state.records.length) {
+    try { await OfflineDB.cacheRecords(state.records); } catch {}
+  }
+};
+
+// Queue scan events when offline
+const _origRecordScan = recordScanEvent;
+recordScanEvent = async function (recordId) {
+  if (!navigator.onLine) {
+    await enqueue('scan', { recordId, purpose: 'staff_lookup' });
+    const msgEl = $('#scanEventMessage');
+    if (msgEl) { msgEl.textContent = 'Queued offline — will sync when connected.'; msgEl.className = 'form-message'; }
+    return;
+  }
+  return _origRecordScan(recordId);
+};
+
+// Service worker registration
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+
+// Online/offline events
+window.addEventListener('online', () => {
+  updateOnlineStatus();
+  syncQueue();
+});
+window.addEventListener('offline', () => {
+  updateOnlineStatus();
+  toast('You are offline. Changes will be queued.');
+});
+
+// UI bindings
+document.addEventListener('DOMContentLoaded', () => {
+  $('#queueBadge')?.addEventListener('click', () => {
+    $('#offlinePanel')?.classList.remove('hidden');
+    refreshQueueUI();
+  });
+  $('#closeOfflinePanel')?.addEventListener('click', () => $('#offlinePanel')?.classList.add('hidden'));
+  $('#syncNowBtn')?.addEventListener('click', () => syncQueue());
+  refreshQueueUI();
+});

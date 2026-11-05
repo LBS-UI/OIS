@@ -240,7 +240,98 @@ export default {
     // Serve static assets for all non-API routes
     if (!path.startsWith('/api/')) {
       if (env.ASSETS) return env.ASSETS.fetch(request);
-      return fail('Not found.', 404);
+  
+    // ---------- Offline sync endpoint (authenticated, idempotent) ----------
+    if (path === '/api/sync' && method === 'POST') {
+      let body;
+      try { body = await bodyJson(request); } catch (e) { return fail(e.message); }
+      const items = Array.isArray(body.items) ? body.items : [];
+      const results = [];
+
+      for (const item of items) {
+        const itemId = cleanString(item.id, 80);
+        const type = cleanString(item.type, 40);
+        if (!itemId || !type) {
+          results.push({ id: item.id, status: 'failed', error: 'Missing id or type.' });
+          continue;
+        }
+
+        try {
+          if (type === 'scan') {
+            const recordId = cleanString(item.recordId, 80);
+            if (!recordId) { results.push({ id: itemId, status: 'failed', error: 'Missing recordId.' }); continue; }
+            const exists = await env.DB.prepare('SELECT id FROM records WHERE id = ?').bind(recordId).first();
+            if (!exists) { results.push({ id: itemId, status: 'failed', error: 'Record not found.' }); continue; }
+            // Idempotent: use client-provided id; ignore if already inserted
+            await env.DB.prepare(
+              'INSERT OR IGNORE INTO scan_events (id, record_id, scanned_at, scanned_by, purpose) VALUES (?, ?, ?, ?, ?)'
+            ).bind(itemId, recordId, item.createdAt || now(), user, cleanString(item.purpose, 60) || 'staff_lookup').run();
+            results.push({ id: itemId, status: 'synced' });
+
+          } else if (type === 'score_update') {
+            const recordId = cleanString(item.recordId, 80);
+            if (!recordId) { results.push({ id: itemId, status: 'failed', error: 'Missing recordId.' }); continue; }
+            const existing = await env.DB.prepare('SELECT * FROM records WHERE id = ?').bind(recordId).first();
+            if (!existing) { results.push({ id: itemId, status: 'failed', error: 'Record not found.' }); continue; }
+            // Conflict check: reject if server was updated after the client's base timestamp
+            const baseUpdated = item.baseUpdatedAt || null;
+            if (baseUpdated && existing.updated_at && existing.updated_at > baseUpdated) {
+              results.push({ id: itemId, status: 'conflict', error: 'Server record is newer. Refresh and retry.', serverRecord: mapRecord(existing) });
+              continue;
+            }
+            const pre = cleanScore(item.preTest);
+            const post = cleanScore(item.postTest);
+            if (Number.isNaN(pre) || Number.isNaN(post)) {
+              results.push({ id: itemId, status: 'failed', error: 'Invalid scores.' });
+              continue;
+            }
+            const ts = now();
+            await env.DB.prepare(
+              'UPDATE records SET pre_test = ?, post_test = ?, updated_at = ?, updated_by = ? WHERE id = ?'
+            ).bind(pre, post, ts, user, recordId).run();
+            try {
+              await env.DB.prepare(
+                `INSERT INTO audit_logs (id, action, record_id, actor, previous_pre_test, previous_post_test, new_pre_test, new_post_test, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              ).bind(uuid(), 'score_update_offline', recordId, user, existing.pre_test, existing.post_test, pre, post, ts).run();
+            } catch (_) {}
+            results.push({ id: itemId, status: 'synced' });
+
+          } else if (type === 'registration') {
+            // Offline registration: create only if PC number not already taken in category
+            let data;
+            try { data = normalize(item.payload || {}); } catch (e) {
+              results.push({ id: itemId, status: 'failed', error: e.message }); continue;
+            }
+            const id = uuid();
+            const qrToken = uuid().replace(/-/g, '') + uuid().replace(/-/g, '').slice(0, 16);
+            const ts = now();
+            try {
+              await env.DB.prepare(
+                `INSERT INTO records (id, qr_token, category, pc_number, full_name, grade, section, school, office, position, pre_test, post_test, feedback, created_at, updated_at, created_by, updated_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              ).bind(id, qrToken, data.category, data.pcNumber, data.fullName, data.grade, data.section, data.school, data.office, data.position, data.preTest, data.postTest, data.feedback, ts, ts, user, user).run();
+              results.push({ id: itemId, status: 'synced', recordId: id });
+            } catch (e) {
+              if (String(e.message).includes('UNIQUE')) {
+                results.push({ id: itemId, status: 'conflict', error: 'PC Number already registered in this category.' });
+              } else {
+                results.push({ id: itemId, status: 'failed', error: 'Could not save registration.' });
+              }
+            }
+
+          } else {
+            results.push({ id: itemId, status: 'failed', error: 'Unknown operation type.' });
+          }
+        } catch (e) {
+          results.push({ id: itemId, status: 'failed', error: 'Sync error.' });
+        }
+      }
+
+      return json({ results });
+    }
+
+    return fail('Not found.', 404);
     }
 
     if (!env.DB) return fail('D1 binding DB is not configured.', 503);
@@ -603,6 +694,97 @@ export default {
         .first();
       if (!r) return fail('Record not found.', 404);
       return json({ record: mapRecord(r) });
+    }
+
+
+    // ---------- Offline sync endpoint (authenticated, idempotent) ----------
+    if (path === '/api/sync' && method === 'POST') {
+      let body;
+      try { body = await bodyJson(request); } catch (e) { return fail(e.message); }
+      const items = Array.isArray(body.items) ? body.items : [];
+      const results = [];
+
+      for (const item of items) {
+        const itemId = cleanString(item.id, 80);
+        const type = cleanString(item.type, 40);
+        if (!itemId || !type) {
+          results.push({ id: item.id, status: 'failed', error: 'Missing id or type.' });
+          continue;
+        }
+
+        try {
+          if (type === 'scan') {
+            const recordId = cleanString(item.recordId, 80);
+            if (!recordId) { results.push({ id: itemId, status: 'failed', error: 'Missing recordId.' }); continue; }
+            const exists = await env.DB.prepare('SELECT id FROM records WHERE id = ?').bind(recordId).first();
+            if (!exists) { results.push({ id: itemId, status: 'failed', error: 'Record not found.' }); continue; }
+            // Idempotent: use client-provided id; ignore if already inserted
+            await env.DB.prepare(
+              'INSERT OR IGNORE INTO scan_events (id, record_id, scanned_at, scanned_by, purpose) VALUES (?, ?, ?, ?, ?)'
+            ).bind(itemId, recordId, item.createdAt || now(), user, cleanString(item.purpose, 60) || 'staff_lookup').run();
+            results.push({ id: itemId, status: 'synced' });
+
+          } else if (type === 'score_update') {
+            const recordId = cleanString(item.recordId, 80);
+            if (!recordId) { results.push({ id: itemId, status: 'failed', error: 'Missing recordId.' }); continue; }
+            const existing = await env.DB.prepare('SELECT * FROM records WHERE id = ?').bind(recordId).first();
+            if (!existing) { results.push({ id: itemId, status: 'failed', error: 'Record not found.' }); continue; }
+            // Conflict check: reject if server was updated after the client's base timestamp
+            const baseUpdated = item.baseUpdatedAt || null;
+            if (baseUpdated && existing.updated_at && existing.updated_at > baseUpdated) {
+              results.push({ id: itemId, status: 'conflict', error: 'Server record is newer. Refresh and retry.', serverRecord: mapRecord(existing) });
+              continue;
+            }
+            const pre = cleanScore(item.preTest);
+            const post = cleanScore(item.postTest);
+            if (Number.isNaN(pre) || Number.isNaN(post)) {
+              results.push({ id: itemId, status: 'failed', error: 'Invalid scores.' });
+              continue;
+            }
+            const ts = now();
+            await env.DB.prepare(
+              'UPDATE records SET pre_test = ?, post_test = ?, updated_at = ?, updated_by = ? WHERE id = ?'
+            ).bind(pre, post, ts, user, recordId).run();
+            try {
+              await env.DB.prepare(
+                `INSERT INTO audit_logs (id, action, record_id, actor, previous_pre_test, previous_post_test, new_pre_test, new_post_test, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              ).bind(uuid(), 'score_update_offline', recordId, user, existing.pre_test, existing.post_test, pre, post, ts).run();
+            } catch (_) {}
+            results.push({ id: itemId, status: 'synced' });
+
+          } else if (type === 'registration') {
+            // Offline registration: create only if PC number not already taken in category
+            let data;
+            try { data = normalize(item.payload || {}); } catch (e) {
+              results.push({ id: itemId, status: 'failed', error: e.message }); continue;
+            }
+            const id = uuid();
+            const qrToken = uuid().replace(/-/g, '') + uuid().replace(/-/g, '').slice(0, 16);
+            const ts = now();
+            try {
+              await env.DB.prepare(
+                `INSERT INTO records (id, qr_token, category, pc_number, full_name, grade, section, school, office, position, pre_test, post_test, feedback, created_at, updated_at, created_by, updated_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              ).bind(id, qrToken, data.category, data.pcNumber, data.fullName, data.grade, data.section, data.school, data.office, data.position, data.preTest, data.postTest, data.feedback, ts, ts, user, user).run();
+              results.push({ id: itemId, status: 'synced', recordId: id });
+            } catch (e) {
+              if (String(e.message).includes('UNIQUE')) {
+                results.push({ id: itemId, status: 'conflict', error: 'PC Number already registered in this category.' });
+              } else {
+                results.push({ id: itemId, status: 'failed', error: 'Could not save registration.' });
+              }
+            }
+
+          } else {
+            results.push({ id: itemId, status: 'failed', error: 'Unknown operation type.' });
+          }
+        } catch (e) {
+          results.push({ id: itemId, status: 'failed', error: 'Sync error.' });
+        }
+      }
+
+      return json({ results });
     }
 
     return fail('Not found.', 404);
