@@ -268,27 +268,7 @@ export default {
       }
     }
 
-    // ---------- Authenticated endpoints ----------
-    const auth = await requireUser(request, env);
-    if (auth.error) {
-      return fail(
-        auth.error,
-        auth.error === 'Authentication required.' ? 401 : 503
-      );
-    }
-    const user = auth.user;
-
-    if (path === '/api/me' && method === 'GET') {
-      return json({ ok: true, user: { username: user } });
-    }
-
-    if (path === '/api/records' && method === 'GET') {
-      const { results = [] } = await env.DB.prepare(
-        'SELECT * FROM records ORDER BY created_at DESC'
-      ).all();
-      return json({ records: results.map(mapRecord) });
-    }
-
+    // ---------- Public registration (no login required) ----------
     if (path === '/api/records' && method === 'POST') {
       let body, data;
       try {
@@ -324,8 +304,8 @@ export default {
             data.feedback,
             ts,
             ts,
-            user,
-            user
+            'public',
+            'public'
           )
           .run();
         const r = await env.DB.prepare('SELECT * FROM records WHERE id = ?')
@@ -338,6 +318,28 @@ export default {
         }
         return fail('Could not save the record.', 500);
       }
+    }
+
+
+    // ---------- Authenticated endpoints ----------
+    const auth = await requireUser(request, env);
+    if (auth.error) {
+      return fail(
+        auth.error,
+        auth.error === 'Authentication required.' ? 401 : 503
+      );
+    }
+    const user = auth.user;
+
+    if (path === '/api/me' && method === 'GET') {
+      return json({ ok: true, user: { username: user } });
+    }
+
+    if (path === '/api/records' && method === 'GET') {
+      const { results = [] } = await env.DB.prepare(
+        'SELECT * FROM records ORDER BY created_at DESC'
+      ).all();
+      return json({ records: results.map(mapRecord) });
     }
 
     const recordMatch = path.match(/^\/api\/records\/([^/]+)$/);
