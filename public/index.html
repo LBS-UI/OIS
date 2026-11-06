@@ -141,6 +141,7 @@ html.theme-transitioning .quick-card,
 html.theme-transitioning .stats-band,
 html.theme-transitioning .mock-window,
 html.theme-transitioning .mock-record,
+html.theme-transitioning .portal-card,
 html.theme-transitioning .btn,
 html.theme-transitioning input,
 html.theme-transitioning select,
@@ -1237,7 +1238,165 @@ body:has(#appView.hidden) .main-area{
 .cta-banner{animation:rise .6s var(--ease-out) both}
 
 /* ------------------------------------------------------------
-   14. DASHBOARD — PAGES
+   13. PORTAL SELECTION (home page — Student vs Teacher)
+   ------------------------------------------------------------ */
+.portal-select-section{
+  padding:clamp(44px,5.5vw,72px) 0 clamp(28px,4vw,48px);
+}
+.portal-select-head{
+  max-width:640px;
+  margin:0 auto clamp(28px,3.6vw,40px);
+  text-align:center;
+}
+.portal-select-head::before{margin-left:auto;margin-right:auto}
+.portal-select-head .muted{margin-inline:auto}
+
+.portal-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:22px;
+  max-width:960px;
+  margin:0 auto;
+}
+
+.portal-card{
+  position:relative;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  gap:14px;
+  padding:36px 32px 32px;
+  background:#fff;
+  border:2px solid var(--line);
+  border-radius:var(--r-xl);
+  text-align:left;
+  cursor:pointer;
+  font-family:inherit;
+  color:inherit;
+  transition:transform var(--t-base),box-shadow var(--t-base),border-color var(--t-base);
+  overflow:hidden;
+  isolation:isolate;
+}
+.portal-card::before{
+  content:'';
+  position:absolute;
+  inset:0;
+  background:linear-gradient(135deg, rgba(38,117,216,.05), rgba(59,197,206,.05));
+  opacity:0;
+  transition:opacity var(--t-base);
+  z-index:-1;
+  pointer-events:none;
+}
+.portal-card:hover,
+.portal-card:focus-visible{
+  transform:translateY(-4px);
+  box-shadow:var(--shadow-lg);
+}
+.portal-card:hover::before,
+.portal-card:focus-visible::before{opacity:1}
+.portal-card--student:hover,
+.portal-card--student:focus-visible{border-color:var(--blue-500)}
+.portal-card--teacher:hover,
+.portal-card--teacher:focus-visible{border-color:var(--teal-600)}
+
+.portal-icon{
+  font-size:46px;
+  line-height:1;
+  margin-bottom:4px;
+  transition:transform var(--t-base);
+  display:inline-block;
+}
+.portal-card:hover .portal-icon,
+.portal-card:focus-visible .portal-icon{
+  transform:scale(1.08) rotate(-4deg);
+}
+
+.portal-card h3{
+  font:800 22px Manrope;
+  color:var(--navy-900);
+  margin:0;
+  letter-spacing:-.4px;
+}
+.portal-card p{
+  font-size:13.5px;
+  line-height:1.65;
+  color:var(--muted);
+  margin:0;
+  max-width:380px;
+}
+
+.portal-cta{
+  margin-top:auto;
+  padding-top:10px;
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  font-size:13.5px;
+  font-weight:700;
+  color:var(--blue-500);
+  transition:gap var(--t-fast),color var(--t-fast);
+}
+.portal-card--teacher .portal-cta{color:var(--teal-600)}
+.portal-card:hover .portal-cta,
+.portal-card:focus-visible .portal-cta{gap:12px}
+
+[data-theme="dark"] .portal-card{
+  background:#0f1e2d;
+  border-color:#1c3044;
+}
+[data-theme="dark"] .portal-card:hover,
+[data-theme="dark"] .portal-card:focus-visible{border-color:#4d92ea}
+[data-theme="dark"] .portal-card--teacher:hover,
+[data-theme="dark"] .portal-card--teacher:focus-visible{border-color:#2ccea2}
+[data-theme="dark"] .portal-card h3{color:#eaf2fa}
+[data-theme="dark"] .portal-card p{color:#8a9fb2}
+[data-theme="dark"] .portal-cta{color:#7bb6f5}
+[data-theme="dark"] .portal-card--teacher .portal-cta{color:#2ccea2}
+[data-theme="dark"] .portal-card::before{
+  background:linear-gradient(135deg, rgba(77,146,234,.08), rgba(77,212,221,.08));
+}
+
+@media (max-width:720px){
+  .portal-grid{grid-template-columns:1fr;gap:14px}
+  .portal-card{padding:26px 22px 24px}
+  .portal-icon{font-size:38px}
+  .portal-card h3{font-size:19px}
+  .portal-card p{font-size:12.5px}
+}
+
+/* ------------------------------------------------------------
+   14. STUDENT MODE — hide teacher UI, keep only Registration
+   ------------------------------------------------------------ */
+body.student-mode .sidebar{display:none !important}
+body.student-mode .main-area{margin-left:0 !important;padding:0 20px 24px !important;max-width:none}
+body.student-mode .notification-wrapper{display:none !important}
+body.student-mode .avatar{display:none !important}
+body.student-mode .nav-label{display:none}
+body.student-mode #logoutBtn{display:none !important}
+body.student-mode #menuBtn{display:none !important}
+body.student-mode .secure-note{display:none}
+
+/* Hide every page except Registration while in student mode */
+body.student-mode #page-home,
+body.student-mode #page-records,
+body.student-mode #page-scores,
+body.student-mode #page-scan{display:none !important}
+
+/* Show the Return-to-Home button only in student mode */
+body.student-mode #returnToHomeBtn{display:inline-flex !important}
+
+/* Neutralise the "danger zone" panel if it ever becomes visible */
+body.student-mode #dangerZonePanel{display:none !important}
+
+@media (max-width:800px){
+  body.student-mode .main-area{
+    padding-left:max(17px,env(safe-area-inset-left)) !important;
+    padding-right:max(17px,env(safe-area-inset-right)) !important;
+  }
+}
+
+/* ------------------------------------------------------------
+   15. DASHBOARD — PAGES
    ------------------------------------------------------------ */
 .page{animation:appear .28s var(--ease-out)}
 @keyframes appear{
@@ -1404,7 +1563,7 @@ h3{font:700 15px Manrope;margin-bottom:5px;color:var(--navy-900)}
 .empty-state p{font-size:11.5px;margin:0;line-height:1.55}
 
 /* ------------------------------------------------------------
-   15. FORMS
+   16. FORMS
    ------------------------------------------------------------ */
 .login-card{
   padding:30px;
@@ -1540,7 +1699,7 @@ h3{font:700 15px Manrope;margin-bottom:5px;color:var(--navy-900)}
 .qr-side > .muted{font-size:10.5px;line-height:1.6;margin-bottom:17px}
 
 /* ------------------------------------------------------------
-   16. TABLES & RECORDS
+   17. TABLES & RECORDS
    ------------------------------------------------------------ */
 .table-panel{padding:0;overflow:hidden}
 
@@ -1636,7 +1795,7 @@ h3{font:700 15px Manrope;margin-bottom:5px;color:var(--navy-900)}
 }
 
 /* ------------------------------------------------------------
-   17. QR LOOKUP
+   18. QR LOOKUP
    ------------------------------------------------------------ */
 .scan-layout{
   display:grid;
@@ -1685,7 +1844,7 @@ h3{font:700 15px Manrope;margin-bottom:5px;color:var(--navy-900)}
 .camera-reader button{font-size:11px!important}
 
 /* ------------------------------------------------------------
-   18. TOAST & APP FOOTER
+   19. TOAST & APP FOOTER
    ------------------------------------------------------------ */
 .toast{
   position:fixed;
@@ -1720,7 +1879,7 @@ h3{font:700 15px Manrope;margin-bottom:5px;color:var(--navy-900)}
 .footer span:first-child{font-weight:700;color:#6d8091}
 
 /* ------------------------------------------------------------
-   19. RESPONSIVE
+   20. RESPONSIVE
    ------------------------------------------------------------ */
 @media (max-width:1280px){
   .feature-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -1895,9 +2054,13 @@ h3{font:700 15px Manrope;margin-bottom:5px;color:var(--navy-900)}
   .step:hover,
   .stat-card:hover,
   .quick-card:hover,
-  .mock-record:hover{transform:none}
+  .mock-record:hover,
+  .portal-card:hover,
+  .portal-card:focus-visible{transform:none}
   .btn:hover{transform:none}
   .theme-toggle:hover svg{transform:none}
+  .portal-card:hover .portal-icon,
+  .portal-card:focus-visible .portal-icon{transform:none}
 }
 
 /* ============================================================
@@ -3076,6 +3239,7 @@ body.intro-lock{overflow:hidden;height:100vh}
   .btn,.notification-wrapper,.theme-toggle,
   .connection,.avatar,.intro-section,.stats-band,
   .landing-section,.cta-banner,.staff-section,
+  .portal-select-section,
   .record-modal-actions,.qr-modal-actions{display:none!important}
   .qr-modal[open],.record-modal[open]{
     position:static;
@@ -3131,7 +3295,7 @@ body.intro-lock{overflow:hidden;height:100vh}
   .records-controls { gap: 6px; }
 }
 
-button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
+button, .btn, .nav-link, .quick-card, .category-card, .notification-item, .portal-card {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
 }
@@ -3181,50 +3345,18 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
 .sheet .actions button:hover{text-decoration:underline}
 @media(max-width:700px){.sheet-wrap{max-height:calc(100vh - 220px)}}
 
-/* ------------------------------------------------------------
-   Dark mode: spreadsheet records table (.sheet)
-   ------------------------------------------------------------ */
-[data-theme="dark"] .sheet-wrap{
-  background:#0f1e2d;
-  border-color:#1c3044;
-}
-[data-theme="dark"] .sheet th{
-  background:#132436;
-  color:#8a9fb2;
-  border-color:#1c3044;
-}
-[data-theme="dark"] .sheet td{
-  background:#0f1e2d;
-  color:#c5d3e0;
-  border-color:#1c3044;
-}
-[data-theme="dark"] .sheet tbody tr:nth-child(even) td{
-  background:#132436;
-}
-[data-theme="dark"] .sheet tbody tr:hover td{
-  background:#152a3e;
-}
-[data-theme="dark"] .sheet tbody tr.selected td{
-  background:#153050;
-}
-[data-theme="dark"] .sheet .row-num{
-  color:#6e8398;
-}
-[data-theme="dark"] .sheet .cell-edit:hover{
-  outline-color:#5ea5f0;
-}
-[data-theme="dark"] .sheet input.cell-input{
-  background:#0a1725;
-  color:#e2ecf5;
-  border-color:#5ea5f0;
-  box-shadow:0 0 0 2px rgba(94,165,240,.2);
-}
-[data-theme="dark"] .sheet .actions button{
-  color:#7bb6f5;
-}
-[data-theme="dark"] .sheet .actions button.danger{
-  color:#f28b82;
-}
+/* Dark mode: spreadsheet records table (.sheet) */
+[data-theme="dark"] .sheet-wrap{background:#0f1e2d;border-color:#1c3044}
+[data-theme="dark"] .sheet th{background:#132436;color:#8a9fb2;border-color:#1c3044}
+[data-theme="dark"] .sheet td{background:#0f1e2d;color:#c5d3e0;border-color:#1c3044}
+[data-theme="dark"] .sheet tbody tr:nth-child(even) td{background:#132436}
+[data-theme="dark"] .sheet tbody tr:hover td{background:#152a3e}
+[data-theme="dark"] .sheet tbody tr.selected td{background:#153050}
+[data-theme="dark"] .sheet .row-num{color:#6e8398}
+[data-theme="dark"] .sheet .cell-edit:hover{outline-color:#5ea5f0}
+[data-theme="dark"] .sheet input.cell-input{background:#0a1725;color:#e2ecf5;border-color:#5ea5f0;box-shadow:0 0 0 2px rgba(94,165,240,.2)}
+[data-theme="dark"] .sheet .actions button{color:#7bb6f5}
+[data-theme="dark"] .sheet .actions button.danger{color:#f28b82}
 </style>
 </head>
 <body>
@@ -3301,13 +3433,14 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
         <h1 id="pageTitle">Overview</h1>
       </div>
       <div class="topbar-right">
+        <button id="returnToHomeBtn" type="button" class="btn secondary small" style="display:none">← Return to home</button>
         <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode" title="Switch to dark mode">
           <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
           <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
         </button>
 
         <span class="connection"><i id="connectionDot"></i><span id="connectionText">Connecting…</span></span>
-          <button id="queueBadge" class="queue-badge hidden" type="button" title="View offline queue">0 pending</button>
+        <button id="queueBadge" class="queue-badge hidden" type="button" title="View offline queue">0 pending</button>
 
         <div class="notification-wrapper">
           <button id="notificationBtn" type="button" class="notification-btn" aria-label="Notifications" aria-haspopup="true" aria-expanded="false" aria-controls="notificationPanel">
@@ -3335,7 +3468,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
       </div>
     </header>
 
-    <!-- ==================== PUBLIC LANDING / LOGIN ==================== -->
+    <!-- ==================== PUBLIC LANDING / HOME ==================== -->
     <section id="loginView" class="landing hidden">
 
       <header class="landing-header">
@@ -3344,6 +3477,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
           <span class="landing-brand-text"><b>NEXTGEN</b><small>SMART CLASSROOM</small></span>
         </a>
         <nav class="landing-nav" aria-label="Landing navigation">
+          <a href="#portals">Portals</a>
           <a href="#categories">Registration</a>
           <a href="#features">Features</a>
           <a href="#how-it-works">How it works</a>
@@ -3361,7 +3495,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
           <h1 class="hero-title">Smarter Registration.<br><em>Better Learning.</em></h1>
           <p class="hero-text">A streamlined classroom platform for participant registration, secure QR identification, and organized learning records.</p>
           <div class="hero-actions">
-            <a class="btn primary" href="#categories">Get started <span aria-hidden="true">→</span></a>
+            <a class="btn primary" href="#portals">Get started <span aria-hidden="true">→</span></a>
             <a class="btn secondary" href="#staffAccess">Staff portal</a>
           </div>
           <ul class="hero-points">
@@ -3417,6 +3551,32 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
         </div>
       </div>
 
+      <!-- ===== PORTAL SELECTION — STUDENT vs TEACHER ===== -->
+      <section class="portal-select-section" id="portals" aria-labelledby="portalTitle">
+        <div class="section-head portal-select-head">
+          <p class="section-kicker">GET STARTED</p>
+          <h2 id="portalTitle">Who are you?</h2>
+          <p class="muted">Choose the portal that matches your role. Students go directly to registration; teachers sign in to the workspace.</p>
+        </div>
+
+        <div class="portal-grid">
+          <button type="button" class="portal-card portal-card--student" data-portal="student" aria-label="Open Student Portal — register yourself">
+            <span class="portal-icon" aria-hidden="true">🎓</span>
+            <h3>Student Portal</h3>
+            <p>Register yourself, submit your details, and receive a personal QR code for attendance.</p>
+            <span class="portal-cta">Open Student Portal →</span>
+          </button>
+
+          <button type="button" class="portal-card portal-card--teacher" data-portal="teacher" aria-label="Open Teacher Portal — staff sign in">
+            <span class="portal-icon" aria-hidden="true">👩‍🏫</span>
+            <h3>Teacher Portal</h3>
+            <p>Sign in to manage registrations, edit assessment scores, view reports, and export data.</p>
+            <span class="portal-cta">Open Teacher Portal →</span>
+          </button>
+        </div>
+      </section>
+      <!-- ===== END PORTAL SELECTION ===== -->
+
       <section class="intro-section" aria-labelledby="aboutTitle">
         <div class="intro-lead">
           <p class="section-kicker">WELCOME TO NEXTGEN</p>
@@ -3460,8 +3620,8 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
       <section class="landing-section" id="categories" aria-labelledby="categoriesTitle">
         <div class="section-head">
           <p class="section-kicker">REGISTRATION</p>
-          <h2 id="categoriesTitle">Choose a registration category</h2>
-          <p class="muted">Pick the category that matches the participant. Registrations are completed by authorized staff inside the workspace, where assessment scores are recorded alongside each profile.</p>
+          <h2 id="categoriesTitle">Registration categories</h2>
+          <p class="muted">Registrations are completed inside the appropriate portal. Students complete their own; staff can register any participant from the teacher workspace.</p>
         </div>
 
         <div class="category-grid">
@@ -3471,7 +3631,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
             </span>
             <h3>Student Registration</h3>
             <p>Register students and manage their classroom information and assessment records.</p>
-            <a class="category-link" href="#staffAccess" data-category="student">Register now <span aria-hidden="true">→</span></a>
+            <a class="category-link" href="#portals" data-category="student">Open portal <span aria-hidden="true">→</span></a>
           </article>
 
           <article class="category-card">
@@ -3480,7 +3640,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
             </span>
             <h3>Employee / Client Registration</h3>
             <p>Register employees or clients and maintain their organizational information and assessment records.</p>
-            <a class="category-link" href="#staffAccess" data-category="employee">Register now <span aria-hidden="true">→</span></a>
+            <a class="category-link" href="#portals" data-category="employee">Open portal <span aria-hidden="true">→</span></a>
           </article>
 
           <article class="category-card">
@@ -3489,7 +3649,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
             </span>
             <h3>Visitor Registration</h3>
             <p>Register visitors and organize their visit-related information.</p>
-            <a class="category-link" href="#staffAccess" data-category="visitor">Register now <span aria-hidden="true">→</span></a>
+            <a class="category-link" href="#portals" data-category="visitor">Open portal <span aria-hidden="true">→</span></a>
           </article>
         </div>
       </section>
@@ -3547,18 +3707,18 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
           <ol class="steps">
             <li class="step">
               <span class="step-num">1</span>
-              <h3>Select your registration category</h3>
-              <p>Choose Student, Employee / Client, or Visitor.</p>
+              <h3>Choose your portal</h3>
+              <p>Students go to the Student Portal to register. Teachers go to the Teacher Portal to sign in.</p>
             </li>
             <li class="step">
               <span class="step-num">2</span>
-              <h3>Complete the registration form</h3>
-              <p>Staff record the participant’s details and any assessment scores.</p>
+              <h3>Complete the form</h3>
+              <p>Students fill in their own registration. Staff register participants and record assessment scores.</p>
             </li>
             <li class="step">
               <span class="step-num">3</span>
               <h3>Receive the QR code</h3>
-              <p>A unique token is issued and can be printed for identification.</p>
+              <p>A unique token is issued and can be printed or displayed for attendance.</p>
             </li>
           </ol>
         </div>
@@ -3567,16 +3727,16 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
       <section class="cta-banner" aria-labelledby="ctaTitle">
         <div>
           <h2 id="ctaTitle">Ready to streamline your classroom records?</h2>
-          <p>Sign in to the workspace and start registering participants, recording assessment scores, and issuing QR codes.</p>
+          <p>Staff can sign in to the workspace to register participants, record assessment scores, and issue QR codes.</p>
         </div>
         <a class="btn" href="#staffAccess">Open staff portal <span aria-hidden="true">→</span></a>
       </section>
 
       <section class="landing-section staff-section" id="staffAccess" aria-labelledby="staffTitle">
         <div class="staff-copy">
-          <p class="section-kicker">STAFF ACCESS</p>
+          <p class="section-kicker">TEACHER PORTAL · STAFF ACCESS</p>
           <h2 id="staffTitle">Sign in to the workspace</h2>
-          <p class="muted">Registration, records, and reports are restricted to authorized staff accounts. Participant details are never exposed on this public page.</p>
+          <p class="muted">Registration, records, and reports for staff accounts. Participant details are not shown to students or on this page.</p>
           <ul class="check-list">
             <li>Centralized participant records</li>
             <li>QR identification and lookup</li>
@@ -3613,14 +3773,14 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
           <nav class="landing-footer-nav" aria-label="Footer navigation">
             <div>
               <h4>Platform</h4>
+              <a href="#portals">Portals</a>
               <a href="#categories">Registration</a>
               <a href="#features">Features</a>
-              <a href="#how-it-works">How it works</a>
             </div>
             <div>
               <h4>Access</h4>
-              <a href="#staffAccess">Staff portal</a>
-              <a href="#staffAccess">Sign in</a>
+              <a href="#portals">Student Portal</a>
+              <a href="#staffAccess">Teacher Portal</a>
             </div>
           </nav>
         </div>
@@ -3732,7 +3892,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
           </article>
         </div>
 
-                <article class="panel recent-panel">
+        <article class="panel recent-panel">
           <div class="panel-heading">
             <div>
               <div class="section-kicker">LATEST ACTIVITY</div>
@@ -4048,7 +4208,6 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
         </dialog>
       </div>
 
-
       <!-- ---------- EDIT SCORES ---------- -->
       <div id="page-scores" class="page hidden">
         <div class="page-intro">
@@ -4200,7 +4359,6 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
   if(!intro) return;
 
   var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  // Always show intro on entry (reduced-motion users still see a short version)
   if(reduce){
     intro.remove();
     return;
@@ -4241,11 +4399,97 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
 })();
 </script>
 
+<!-- Portal switching behaviour (Student vs Teacher) -->
+<script>
+(function(){
+  function landing(){
+    return document.getElementById('loginView');
+  }
+  function app(){
+    return document.getElementById('appView');
+  }
+  function showLanding(){
+    document.body.classList.remove('student-mode');
+    const l = landing(), a = app();
+    if(l) l.classList.remove('hidden');
+    if(a) a.classList.add('hidden');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  function showAppView(){
+    const l = landing(), a = app();
+    if(l) l.classList.add('hidden');
+    if(a) a.classList.remove('hidden');
+  }
+  function enterStudentMode(){
+    document.body.classList.add('student-mode');
+    // Use app.js global helpers if they are available.
+    try { if (typeof showApp === 'function') showApp(); } catch(e){ /* ignore */ }
+    try { if (typeof resetForm === 'function') resetForm(); } catch(e){ /* ignore */ }
+    try { if (typeof navigate === 'function') navigate('register'); } catch(e){ /* ignore */ }
+    showAppView();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  function enterTeacherMode(){
+    document.body.classList.remove('student-mode');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const isAuthed = logoutBtn && !logoutBtn.classList.contains('hidden');
+    if (isAuthed) {
+      try { if (typeof showApp === 'function') showApp(); } catch(e){ /* ignore */ }
+      try { if (typeof navigate === 'function') navigate('home'); } catch(e){ /* ignore */ }
+      showAppView();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      showLanding();
+      const target = document.getElementById('staffAccess');
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setTimeout(function(){
+        const u = document.querySelector('#loginForm input[name="username"]');
+        if (u) u.focus();
+      }, 500);
+    }
+  }
+
+  function bind(){
+    document.querySelectorAll('[data-portal="student"]').forEach(function(btn){
+      btn.addEventListener('click', enterStudentMode);
+    });
+    document.querySelectorAll('[data-portal="teacher"]').forEach(function(btn){
+      btn.addEventListener('click', enterTeacherMode);
+    });
+    const ret = document.getElementById('returnToHomeBtn');
+    if (ret) ret.addEventListener('click', showLanding);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bind);
+  } else {
+    bind();
+  }
+
+  // Ensure unauthenticated visitors see the landing/portal page.
+  // app.js's checkSession() currently auto-shows the app; this poll waits for it to settle
+  // and then reveals the landing page if the user is not signed in.
+  let waited = 0;
+  const interval = setInterval(function(){
+    waited += 100;
+    const connectionText = (document.getElementById('connectionText')?.textContent || '').trim();
+    const logoutBtn = document.getElementById('logoutBtn');
+    const settled = connectionText && connectionText !== 'Connecting…';
+    if (settled || waited > 3000) {
+      clearInterval(interval);
+      const isAuthed = logoutBtn && !logoutBtn.classList.contains('hidden');
+      if (!isAuthed && !document.body.classList.contains('student-mode')) {
+        showLanding();
+      }
+    }
+  }, 100);
+})();
+</script>
+
 <!-- Service worker: primary registration lives in app.js (update + reload handling) -->
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    // Lightweight register if app.js has not run yet; app.js also registers with update logic
     navigator.serviceWorker.getRegistration('/').then((existing) => {
       if (!existing) {
         navigator.serviceWorker.register('/sw.js').catch(err => {
