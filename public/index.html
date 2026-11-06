@@ -3822,10 +3822,11 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
               <option value="employee">Employees / Clients</option>
               <option value="visitor">Visitors</option>
             </select>
-            <div class="export-actions">
-              <button class="btn secondary small" id="exportCsv">CSV</button>
-              <button class="btn secondary small" id="exportXlsx">Excel</button>
-              <button class="btn secondary small" id="exportPdf">PDF</button>
+            <div class="export-actions" id="exportActions">
+              <label class="export-format-check"><input type="checkbox" id="fmtCsv" checked> CSV</label>
+              <label class="export-format-check"><input type="checkbox" id="fmtXlsx" checked> Excel</label>
+              <label class="export-format-check"><input type="checkbox" id="fmtPdf"> PDF</label>
+              <button class="btn primary small" id="exportReportBtn" type="button">Export report</button>
             </div>
           </div>
 
@@ -3839,6 +3840,11 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
               <option value="name-asc">Name A → Z</option>
               <option value="name-desc">Name Z → A</option>
               <option value="pc-asc">PC number ascending</option>
+            </select>
+            <select id="filterArchived" aria-label="Active or archived records">
+              <option value="active">Active records</option>
+              <option value="archived">Archived only</option>
+              <option value="all">All records</option>
             </select>
             <span class="spacer" aria-hidden="true"></span>
             <span id="recordsUpdated" class="records-updated" aria-live="polite"></span>
@@ -3885,6 +3891,37 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
           <div class="qr-modal-actions">
             <button type="button" class="btn secondary" id="qrModalPrint">Print</button>
             <button type="button" class="btn primary" id="qrModalDownload">Download PNG</button>
+          </div>
+        </dialog>
+
+        <dialog id="exportDialog" class="export-dialog" aria-labelledby="exportDialogTitle">
+          <div class="export-dialog-header">
+            <h3 id="exportDialogTitle">Export report</h3>
+            <button type="button" class="record-modal-close" id="exportDialogClose" aria-label="Close export dialog">×</button>
+          </div>
+          <div class="export-dialog-body">
+            <p id="exportDialogSummary" class="export-summary"></p>
+            <div id="exportDialogFilters" class="export-filters muted"></div>
+            <div id="exportProgress" class="export-progress hidden" role="status" aria-live="polite">
+              <div class="export-progress-bar"><div id="exportProgressFill"></div></div>
+              <span id="exportProgressText">Preparing files…</span>
+            </div>
+            <div id="exportDownloadLinks" class="export-download-links hidden"></div>
+            <div id="exportError" class="export-error hidden" role="alert"></div>
+          </div>
+          <div class="export-dialog-actions" id="exportDialogActions">
+            <button type="button" class="btn primary" id="exportKeepBtn">Download and Keep Records</button>
+            <button type="button" class="btn secondary" id="exportArchiveBtn">Download and Archive Records</button>
+            <button type="button" class="btn text" id="exportCancelBtn">Cancel</button>
+          </div>
+          <div class="export-dialog-actions hidden" id="exportArchiveConfirmActions">
+            <p id="exportArchiveConfirmText" class="export-archive-warn"></p>
+            <button type="button" class="btn danger" id="exportArchiveConfirmBtn">Confirm archive</button>
+            <button type="button" class="btn secondary" id="exportArchiveBackBtn">Back</button>
+          </div>
+          <div class="export-dialog-actions hidden" id="exportDoneActions">
+            <button type="button" class="btn primary" id="exportDoneBtn">Done</button>
+            <button type="button" class="btn secondary" id="exportRetryBtn">Retry failed</button>
           </div>
         </dialog>
       </div>
@@ -3987,6 +4024,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="/offline-db.js"></script>
 <script src="/app.js"></script>
 

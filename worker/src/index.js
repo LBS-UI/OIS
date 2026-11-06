@@ -113,6 +113,9 @@ function mapRecord(r) {
     feedback: r.feedback || '',
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    archived: !!r.archived,
+    archivedAt: r.archived_at || null,
+    archivedBy: r.archived_by || null,
   };
 }
 
@@ -322,11 +325,13 @@ export default {
 
 
 
-    // ---------- Public records list (for overview) ----------
+    // ---------- Public records list (for overview) — active records only ----------
     if (path === '/api/records' && method === 'GET') {
-      const { results = [] } = await env.DB.prepare(
-        'SELECT * FROM records ORDER BY created_at DESC'
-      ).all();
+      const includeArchived = url.searchParams.get('archived') === '1' || url.searchParams.get('include_archived') === '1';
+      const sql = includeArchived
+        ? 'SELECT * FROM records ORDER BY created_at DESC'
+        : 'SELECT * FROM records WHERE COALESCE(archived, 0) = 0 ORDER BY created_at DESC';
+      const { results = [] } = await env.DB.prepare(sql).all();
       return json({ records: results.map(mapRecord) });
     }
 
@@ -344,11 +349,94 @@ export default {
       return json({ ok: true, user: { username: user } });
     }
 
+    // Authenticated list (same filtering; auth already verified above)
     if (path === '/api/records' && method === 'GET') {
-      const { results = [] } = await env.DB.prepare(
-        'SELECT * FROM records ORDER BY created_at DESC'
-      ).all();
+      const includeArchived = url.searchParams.get('archived') === '1' || url.searchParams.get('include_archived') === '1';
+      const onlyArchived = url.searchParams.get('archived') === 'only';
+      let sql = 'SELECT * FROM records WHERE COALESCE(archived, 0) = 0 ORDER BY created_at DESC';
+      if (onlyArchived) sql = 'SELECT * FROM records WHERE archived = 1 ORDER BY archived_at DESC, created_at DESC';
+      else if (includeArchived) sql = 'SELECT * FROM records ORDER BY created_at DESC';
+      const { results = [] } = await env.DB.prepare(sql).all();
       return json({ records: results.map(mapRecord) });
+    }
+
+    // ---------- Archive records (authenticated, reversible) ----------
+    if (path === '/api/records/archive' && method === 'POST') {
+      let body;
+      try { body = await bodyJson(request); } catch (e) { return fail(e.message); }
+      const ids = Array.isArray(body.ids) ? body.ids.map((id) => cleanString(id, 80)).filter(Boolean) : [];
+      if (!ids.length) return fail('Provide at least one record id to archive.');
+      if (ids.length > 500) return fail('Too many records in one archive request (max 500).');
+
+      const ts = now();
+      const archived = [];
+      const skipped = [];
+
+      try {
+        // Process in a batch; D1 supports sequential statements
+        for (const id of ids) {
+          const existing = await env.DB.prepare(
+            'SELECT id, archived FROM records WHERE id = ?'
+          ).bind(id).first();
+          if (!existing) {
+            skipped.push({ id, reason: 'not_found' });
+            continue;
+          }
+          if (existing.archived) {
+            skipped.push({ id, reason: 'already_archived' });
+            continue;
+          }
+          const result = await env.DB.prepare(
+            'UPDATE records SET archived = 1, archived_at = ?, archived_by = ?, updated_at = ?, updated_by = ? WHERE id = ? AND COALESCE(archived, 0) = 0'
+          ).bind(ts, user, ts, user, id).run();
+          if (result.meta.changes) {
+            archived.push(id);
+            try {
+              await env.DB.prepare(
+                `INSERT INTO audit_logs (id, action, record_id, actor, details, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)`
+              ).bind(uuid(), 'archive', id, user, JSON.stringify({ batchSize: ids.length }), ts).run();
+            } catch (_) { /* best-effort audit */ }
+          } else {
+            skipped.push({ id, reason: 'no_change' });
+          }
+        }
+        return json({
+          ok: true,
+          archivedCount: archived.length,
+          archivedIds: archived,
+          skipped,
+        });
+      } catch (e) {
+        return fail('Could not archive records.', 500);
+      }
+    }
+
+    // ---------- Unarchive (restore) records ----------
+    if (path === '/api/records/unarchive' && method === 'POST') {
+      let body;
+      try { body = await bodyJson(request); } catch (e) { return fail(e.message); }
+      const ids = Array.isArray(body.ids) ? body.ids.map((id) => cleanString(id, 80)).filter(Boolean) : [];
+      if (!ids.length) return fail('Provide at least one record id to restore.');
+      if (ids.length > 500) return fail('Too many records in one request (max 500).');
+
+      const ts = now();
+      const restored = [];
+      for (const id of ids) {
+        const result = await env.DB.prepare(
+          'UPDATE records SET archived = 0, archived_at = NULL, archived_by = NULL, updated_at = ?, updated_by = ? WHERE id = ? AND archived = 1'
+        ).bind(ts, user, id).run();
+        if (result.meta.changes) {
+          restored.push(id);
+          try {
+            await env.DB.prepare(
+              `INSERT INTO audit_logs (id, action, record_id, actor, details, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)`
+            ).bind(uuid(), 'unarchive', id, user, null, ts).run();
+          } catch (_) {}
+        }
+      }
+      return json({ ok: true, restoredCount: restored.length, restoredIds: restored });
     }
 
     const recordMatch = path.match(/^\/api\/records\/([^/]+)$/);

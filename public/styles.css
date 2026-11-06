@@ -1644,3 +1644,129 @@ h3{font:700 15px Manrope;margin-bottom:5px;color:var(--navy-900)}
   .mock-record:hover{transform:none}
   .btn:hover{transform:none}
 }
+/* ------------------------------------------------------------
+   EXPORT REPORT & ARCHIVE DIALOG
+   ------------------------------------------------------------ */
+.export-actions{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:8px 12px;
+}
+.export-format-check{
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  font-size:13px;
+  cursor:pointer;
+  user-select:none;
+  color:var(--text);
+}
+.export-format-check input{accent-color:var(--primary,#1a5fb4)}
+
+.export-dialog{
+  border:none;
+  border-radius:12px;
+  padding:0;
+  max-width:min(480px,94vw);
+  width:100%;
+  box-shadow:0 20px 50px rgba(0,0,0,.25);
+  background:var(--panel,#fff);
+  color:var(--text);
+}
+.export-dialog::backdrop{background:rgba(8,20,35,.45)}
+.export-dialog-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:16px 18px 8px;
+  border-bottom:1px solid var(--border,#e2e8f0);
+}
+.export-dialog-header h3{margin:0;font-size:1.1rem}
+.export-dialog-body{padding:14px 18px}
+.export-summary{margin:0 0 8px;font-size:14px;line-height:1.45}
+.export-filters{font-size:12px;margin-bottom:10px}
+.export-progress{margin:12px 0}
+.export-progress-bar{
+  height:6px;
+  background:var(--border,#e2e8f0);
+  border-radius:4px;
+  overflow:hidden;
+  margin-bottom:6px;
+}
+.export-progress-bar > div{
+  height:100%;
+  width:0%;
+  background:var(--primary,#1a5fb4);
+  transition:width .25s ease;
+}
+.export-download-links{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  margin:10px 0;
+}
+.export-download-links a{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:8px 12px;
+  border-radius:8px;
+  background:var(--bg-muted,#f1f5f9);
+  color:var(--primary,#1a5fb4);
+  text-decoration:none;
+  font-size:13px;
+  font-weight:600;
+}
+.export-download-links a:hover{filter:brightness(.96)}
+.export-error{
+  margin:8px 0;
+  padding:10px 12px;
+  border-radius:8px;
+  background:#fef2f2;
+  color:#991b1b;
+  font-size:13px;
+}
+.export-dialog-actions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  padding:12px 18px 16px;
+  border-top:1px solid var(--border,#e2e8f0);
+}
+.export-dialog-actions .btn{flex:1 1 auto;min-width:120px}
+.export-archive-warn{
+  flex:1 1 100%;
+  margin:0 0 6px;
+  font-size:13px;
+  color:#9a3412;
+  background:#fff7ed;
+  padding:10px 12px;
+  border-radius:8px;
+}
+.btn.text{
+  background:transparent;
+  border:none;
+  color:var(--muted);
+  box-shadow:none;
+}
+.btn.danger{
+  background:#dc2626;
+  color:#fff;
+  border-color:#dc2626;
+}
+.btn.danger:hover{filter:brightness(.95)}
+.hidden{display:none!important}
+
+[data-theme="dark"] .export-dialog{background:#0f1e2d;color:#e2e8f0}
+[data-theme="dark"] .export-dialog-header,
+[data-theme="dark"] .export-dialog-actions{border-color:#1c3044}
+[data-theme="dark"] .export-download-links a{background:#1c3044;color:#7dd3fc}
+[data-theme="dark"] .export-error{background:#450a0a;color:#fecaca}
+[data-theme="dark"] .export-archive-warn{background:#431407;color:#fdba74}
+
+@media (max-width:560px){
+  .export-actions{width:100%}
+  .export-format-check{font-size:12px}
+  .export-dialog-actions .btn{min-width:0;flex:1 1 100%}
+}

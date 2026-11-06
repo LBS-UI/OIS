@@ -478,13 +478,18 @@ function printQR(record) {
 /* ============================================================
    RECORDS DASHBOARD — load, filter, sort, paginate, view
    ============================================================ */
-async function loadRecords() {
+async function loadRecords(opts = {}) {
   const tableEl = $('#recordsTable');
   if (tableEl && !state.hasLoadedOnce) {
     tableEl.innerHTML = '<div class="table-loading">Loading records…</div>';
   }
   try {
-    const result = await api('/records');
+    const archView = $('#filterArchived')?.value || 'active';
+    let qs = '';
+    if (archView === 'archived') qs = '?archived=only';
+    else if (archView === 'all') qs = '?include_archived=1';
+    // default: active only (server excludes archived)
+    const result = await api('/records' + qs);
     state.records = result.records || [];
     state.apiReady = true;
     state.hasLoadedOnce = true;
@@ -505,7 +510,7 @@ async function loadRecords() {
         <p>${esc(e.message)}</p>
         <button type="button" class="btn secondary small" id="retryLoadRecords" style="margin-top:10px">Try again</button>
       </div>`;
-      $('#retryLoadRecords')?.addEventListener('click', loadRecords);
+      $('#retryLoadRecords')?.addEventListener('click', () => loadRecords({ force: true }));
     }
   }
 }
@@ -915,6 +920,7 @@ function resetRecordsView() {
   if ($('#filterCategory')) $('#filterCategory').value = 'all';
   if ($('#filterSection')) $('#filterSection').value = 'all';
   if ($('#sortBy')) $('#sortBy').value = 'newest';
+  if ($('#filterArchived')) $('#filterArchived').value = 'active';
   state.recordPage = 1;
 }
 
@@ -922,7 +928,17 @@ $('#searchInput')?.addEventListener('input', () => { state.recordPage = 1; rende
 $('#filterCategory')?.addEventListener('change', () => { state.recordPage = 1; renderRecords(); });
 $('#filterSection')?.addEventListener('change', () => { state.recordPage = 1; renderRecords(); });
 $('#sortBy')?.addEventListener('change', () => { state.recordPage = 1; renderRecords(); });
-$('#clearFilters')?.addEventListener('click', () => { resetRecordsView(); renderRecords(); });
+$('#filterArchived')?.addEventListener('change', () => {
+  state.recordPage = 1;
+  state.recordsLastFetched = 0;
+  loadRecords({ force: true });
+});
+$('#clearFilters')?.addEventListener('click', () => {
+  const wasArchived = ($('#filterArchived')?.value || 'active') !== 'active';
+  resetRecordsView();
+  if (wasArchived) loadRecords({ force: true });
+  else renderRecords();
+});
 
 $('#recordModalClose')?.addEventListener('click', () => $('#recordModal')?.close());
 $('#recordModal')?.addEventListener('click', (e) => { if (e.target === $('#recordModal')) $('#recordModal').close(); });
@@ -973,11 +989,16 @@ function categoryChip(cat) {
 }
 
 /* ============================================================
-   EXPORTS — CSV / Excel / PDF
+   EXPORTS — multi-format CSV / Excel / PDF + safe archive
    ============================================================ */
-function exportRows() {
-  return state.records.map(r => ({
-    'PC Number': r.pcNumber,
+function getExportSourceRecords() {
+  // Always respect current search / filters / archived view
+  return getFilteredRecords();
+}
+
+function exportRowsFrom(records) {
+  return records.map(r => ({
+    'PC Number': r.pcNumber != null ? String(r.pcNumber) : '',
     'Category': categoryNames[r.category] || r.category,
     'Full Name': r.fullName,
     'Grade': r.grade || '',
@@ -989,66 +1010,411 @@ function exportRows() {
     'Post-test Score': r.postTest ?? '',
     'Feedback': r.feedback || '',
     'QR Token': r.qrToken || '',
-    'Created At': r.createdAt || ''
+    'Created At': r.createdAt || '',
+    'Archived': r.archived ? 'Yes' : 'No'
   }));
 }
 
 function downloadBlob(blob, name) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  a.href = url;
+  a.download = name;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
-$('#exportCsv')?.addEventListener('click', () => {
-  const rows = exportRows();
-  if (!rows.length) { toast('There are no records to export'); return; }
+function selectedExportFormats() {
+  const formats = [];
+  if ($('#fmtCsv')?.checked) formats.push('csv');
+  if ($('#fmtXlsx')?.checked) formats.push('xlsx');
+  if ($('#fmtPdf')?.checked) formats.push('pdf');
+  return formats;
+}
+
+function currentFilterSummary() {
+  const parts = [];
+  const q = ($('#searchInput')?.value || '').trim();
+  const cat = $('#filterCategory')?.value || 'all';
+  const sec = $('#filterSection')?.value || 'all';
+  const arch = $('#filterArchived')?.value || 'active';
+  if (q) parts.push(`Search: “${q}”`);
+  if (cat !== 'all') parts.push(`Category: ${categoryNames[cat] || cat}`);
+  if (sec !== 'all') parts.push(`Section: ${sec}`);
+  if (arch === 'archived') parts.push('View: archived only');
+  else if (arch === 'all') parts.push('View: active + archived');
+  else parts.push('View: active records');
+  return parts.length ? parts.join(' · ') : 'No extra filters (all matching records)';
+}
+
+function stampFilename(base, ext) {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+  return `nextgen-${base}-${stamp}.${ext}`;
+}
+
+function buildCsvBlob(rows) {
+  if (!rows.length) return null;
   const keys = Object.keys(rows[0]);
   const safe = v => {
     let s = String(v ?? '');
-    if (/^[=+\-@]/.test(s)) s = "'" + s;
+    // Preserve leading zeros and prevent formula injection
+    if (/^[=+\-@\t\r]/.test(s) || /^\d+$/.test(s)) s = "'" + s;
     return `"${s.replace(/"/g, '""')}"`;
   };
   const csv = [keys, ...rows.map(r => keys.map(k => r[k]))]
-    .map(row => row.map(safe).join(',')).join('\r\n');
-  downloadBlob(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }), 'nextgen-records.csv');
-});
+    .map(row => row.map(safe).join(','))
+    .join('\r\n');
+  return new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+}
 
-$('#exportXlsx')?.addEventListener('click', () => {
-  const rows = exportRows();
-  if (!rows.length) { toast('There are no records to export'); return; }
-  if (!window.XLSX) { toast('Excel export library did not load. Use CSV for now.'); return; }
-  const ws = XLSX.utils.json_to_sheet(rows);
+function buildXlsxBlob(rows) {
+  if (!window.XLSX) throw new Error('Excel library did not load');
+  // Force PC Number and similar fields to text to keep leading zeros
+  const sheetRows = rows.map(r => {
+    const out = { ...r };
+    if (out['PC Number'] != null) out['PC Number'] = String(out['PC Number']);
+    return out;
+  });
+  const ws = XLSX.utils.json_to_sheet(sheetRows);
+  // Mark PC Number column as text where possible
+  const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+  for (let R = range.s.r + 1; R <= range.e.r; ++R) {
+    const addr = XLSX.utils.encode_cell({ r: R, c: 0 });
+    if (ws[addr] && ws[addr].t !== 's') {
+      ws[addr].t = 's';
+      ws[addr].v = String(ws[addr].v ?? '');
+    }
+  }
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Participants');
-  XLSX.writeFile(wb, 'nextgen-records.xlsx');
-});
+  const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+  return new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
 
-$('#exportPdf')?.addEventListener('click', () => {
-  const rows = exportRows();
-  if (!rows.length) { toast('There are no records to export'); return; }
-  if (!window.jspdf?.jsPDF) { toast('PDF library did not load. Use CSV for now.'); return; }
-  const doc = new jspdf.jsPDF({ orientation: 'landscape' });
-  doc.setFontSize(15);
-  doc.text('NextGen Smart Classroom — Participant Records', 14, 15);
+function buildPdfBlob(records) {
+  if (!window.jspdf?.jsPDF) throw new Error('PDF library did not load');
+  const doc = new jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const generated = new Date().toLocaleString();
+  doc.setFontSize(14);
+  doc.text('NextGen Smart Classroom — Participant Records', 14, 14);
   doc.setFontSize(8);
-  const columns = ['PC Number','Category','Full Name','Grade / Section','Pre-test','Post-test'];
-  const body = state.records.map(r => [
-    r.pcNumber, categoryNames[r.category], r.fullName,
-    r.grade || r.office || '', r.preTest ?? '—', r.postTest ?? '—'
+  doc.setTextColor(100);
+  doc.text(`Generated: ${generated}  ·  ${records.length} record${records.length === 1 ? '' : 's'}`, 14, 20);
+  doc.setTextColor(0);
+  const columns = ['PC Number', 'Category', 'Full Name', 'Grade / Section', 'Pre-test', 'Post-test'];
+  const body = records.map(r => [
+    r.pcNumber != null ? String(r.pcNumber) : '',
+    categoryNames[r.category] || r.category || '',
+    r.fullName || '',
+    [r.grade, r.section].filter(Boolean).join(' / ') || r.office || '',
+    r.preTest ?? '—',
+    r.postTest ?? '—'
   ]);
-  if (doc.autoTable) {
-    doc.autoTable({ head: [columns], body, startY: 22, styles: { fontSize: 8, cellPadding: 2 }, headStyles: { fillColor: [16, 44, 72] } });
+  if (typeof doc.autoTable === 'function') {
+    doc.autoTable({
+      head: [columns],
+      body,
+      startY: 24,
+      styles: { fontSize: 8, cellPadding: 1.5, overflow: 'linebreak' },
+      headStyles: { fillColor: [16, 44, 72], textColor: 255 },
+      margin: { left: 10, right: 10 },
+      didDrawPage: (data) => {
+        const page = doc.internal.getNumberOfPages();
+        doc.setFontSize(7);
+        doc.setTextColor(120);
+        doc.text(`Page ${page}`, doc.internal.pageSize.getWidth() - 20, doc.internal.pageSize.getHeight() - 8);
+      }
+    });
   } else {
-    let y = 25;
+    let y = 26;
     doc.text(columns.join(' | '), 14, y);
     body.forEach(row => {
       y += 6;
       if (y > 190) { doc.addPage(); y = 15; }
-      doc.text(row.map(x => String(x).slice(0, 25)).join(' | '), 14, y);
+      doc.text(row.map(x => String(x).slice(0, 28)).join(' | '), 14, y);
     });
   }
-  doc.save('nextgen-records.pdf');
+  return doc.output('blob');
+}
+
+const exportSession = {
+  records: [],
+  formats: [],
+  files: [], // { name, blob, format }
+  mode: null, // 'keep' | 'archive'
+  archiving: false
+};
+
+function openExportDialog() {
+  const records = getExportSourceRecords();
+  const formats = selectedExportFormats();
+  if (!formats.length) { toast('Select at least one format (CSV, Excel, or PDF)'); return; }
+  if (!records.length) { toast('There are no records to export for the current filters'); return; }
+
+  // Offline safeguard: detect pending items that match selected record ids
+  exportSession.records = records;
+  exportSession.formats = formats;
+  exportSession.files = [];
+  exportSession.mode = null;
+  exportSession.archiving = false;
+
+  const dlg = $('#exportDialog');
+  if (!dlg) return;
+
+  $('#exportDialogSummary').textContent =
+    `You are about to export ${records.length} record${records.length === 1 ? '' : 's'} as: ${formats.map(f => f.toUpperCase()).join(', ')}.`;
+  $('#exportDialogFilters').textContent = currentFilterSummary();
+
+  $('#exportProgress')?.classList.add('hidden');
+  $('#exportDownloadLinks')?.classList.add('hidden');
+  $('#exportDownloadLinks').innerHTML = '';
+  $('#exportError')?.classList.add('hidden');
+  $('#exportError').textContent = '';
+  $('#exportDialogActions')?.classList.remove('hidden');
+  $('#exportArchiveConfirmActions')?.classList.add('hidden');
+  $('#exportDoneActions')?.classList.add('hidden');
+  $('#exportArchiveBtn').disabled = false;
+
+  // Disable archive when viewing already-archived or mixed without care; prefer active only
+  const hasArchived = records.some(r => r.archived);
+  const allArchived = records.every(r => r.archived);
+  if (allArchived) {
+    $('#exportArchiveBtn').disabled = true;
+    $('#exportArchiveBtn').title = 'Selected records are already archived';
+  } else {
+    $('#exportArchiveBtn').disabled = false;
+    $('#exportArchiveBtn').title = hasArchived
+      ? 'Only non-archived records in this selection will be archived'
+      : '';
+  }
+
+  if (typeof dlg.showModal === 'function') dlg.showModal();
+  else dlg.setAttribute('open', '');
+}
+
+function closeExportDialog() {
+  const dlg = $('#exportDialog');
+  if (!dlg) return;
+  if (typeof dlg.close === 'function') dlg.close();
+  else dlg.removeAttribute('open');
+}
+
+function setExportProgress(pct, text) {
+  const bar = $('#exportProgress');
+  const fill = $('#exportProgressFill');
+  const label = $('#exportProgressText');
+  if (bar) bar.classList.remove('hidden');
+  if (fill) fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  if (label) label.textContent = text || 'Preparing files…';
+}
+
+async function generateExportFiles() {
+  const records = exportSession.records;
+  const formats = exportSession.formats;
+  const rows = exportRowsFrom(records);
+  const files = [];
+  const total = formats.length;
+  let step = 0;
+
+  setExportProgress(5, 'Preparing export…');
+
+  for (const fmt of formats) {
+    step += 1;
+    setExportProgress(Math.round((step - 0.4) / total * 90) + 5, `Building ${fmt.toUpperCase()}…`);
+    try {
+      if (fmt === 'csv') {
+        const blob = buildCsvBlob(rows);
+        files.push({ format: 'csv', name: stampFilename('records', 'csv'), blob });
+      } else if (fmt === 'xlsx') {
+        const blob = buildXlsxBlob(rows);
+        files.push({ format: 'xlsx', name: stampFilename('records', 'xlsx'), blob });
+      } else if (fmt === 'pdf') {
+        const blob = buildPdfBlob(records);
+        files.push({ format: 'pdf', name: stampFilename('records', 'pdf'), blob });
+      }
+    } catch (err) {
+      throw new Error(`Failed to build ${fmt.toUpperCase()}: ${err.message || err}`);
+    }
+  }
+
+  setExportProgress(95, 'Finalizing…');
+  exportSession.files = files;
+  return files;
+}
+
+function presentDownloadLinks(files) {
+  const box = $('#exportDownloadLinks');
+  if (!box) return;
+  box.innerHTML = '';
+  box.classList.remove('hidden');
+  files.forEach(f => {
+    const url = URL.createObjectURL(f.blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = f.name;
+    a.textContent = `Download ${f.name}`;
+    a.rel = 'noopener';
+    box.appendChild(a);
+    // Auto-trigger first file; remaining via links (browser multi-download limits)
+    setTimeout(() => URL.revokeObjectURL(url), 120000);
+  });
+  // Prefer single ZIP when multiple formats and JSZip is available
+}
+
+async function packageOrDownload(files) {
+  if (files.length > 1 && window.JSZip) {
+    setExportProgress(98, 'Packaging ZIP…');
+    const zip = new JSZip();
+    for (const f of files) zip.file(f.name, f.blob);
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    const zipName = stampFilename('reports', 'zip');
+    downloadBlob(zipBlob, zipName);
+    presentDownloadLinks([{ name: zipName, blob: zipBlob, format: 'zip' }, ...files]);
+    return;
+  }
+  // Single file or no JSZip: trigger downloads and show links
+  for (const f of files) {
+    try { downloadBlob(f.blob, f.name); } catch (_) {}
+  }
+  presentDownloadLinks(files);
+}
+
+async function runExportKeep() {
+  const errEl = $('#exportError');
+  errEl?.classList.add('hidden');
+  $('#exportDialogActions')?.classList.add('hidden');
+  try {
+    const files = await generateExportFiles();
+    await packageOrDownload(files);
+    setExportProgress(100, 'Export ready. Use the links below if a download was blocked.');
+    $('#exportDoneActions')?.classList.remove('hidden');
+    toast('Export prepared — check your downloads');
+  } catch (err) {
+    if (errEl) {
+      errEl.textContent = err.message || String(err);
+      errEl.classList.remove('hidden');
+    }
+    $('#exportDialogActions')?.classList.remove('hidden');
+    $('#exportProgress')?.classList.add('hidden');
+    toast('Export failed — you can retry');
+  }
+}
+
+async function checkPendingConflicts(recordIds) {
+  try {
+    if (!window.OfflineDB) return [];
+    const pending = await OfflineDB.exportPending();
+    const idSet = new Set(recordIds);
+    return pending.filter(p => {
+      const rid = p.recordId || p.payload?.id || p.id;
+      return rid && idSet.has(rid);
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function runExportArchive() {
+  const toArchive = exportSession.records.filter(r => !r.archived);
+  if (!toArchive.length) {
+    toast('No active (non-archived) records in this selection');
+    return;
+  }
+
+  // Offline safeguard
+  const conflicts = await checkPendingConflicts(toArchive.map(r => r.id));
+  if (conflicts.length) {
+    const errEl = $('#exportError');
+    if (errEl) {
+      errEl.textContent = `${conflicts.length} selected record(s) still have pending offline changes. Synchronize first, or use “Download and Keep Records” instead.`;
+      errEl.classList.remove('hidden');
+    }
+    toast('Pending offline changes detected — archive blocked');
+    return;
+  }
+
+  // Show explicit final confirmation
+  $('#exportDialogActions')?.classList.add('hidden');
+  const conf = $('#exportArchiveConfirmActions');
+  conf?.classList.remove('hidden');
+  const msg = $('#exportArchiveConfirmText');
+  if (msg) {
+    msg.textContent = `This will archive ${toArchive.length} record${toArchive.length === 1 ? '' : 's'}. They will leave the active list but remain recoverable by authorized staff. Continue only after the export files are ready.`;
+  }
+}
+
+async function confirmArchiveAfterExport() {
+  const errEl = $('#exportError');
+  errEl?.classList.add('hidden');
+  const toArchive = exportSession.records.filter(r => !r.archived);
+  if (!toArchive.length) return;
+
+  $('#exportArchiveConfirmActions')?.classList.add('hidden');
+  exportSession.archiving = true;
+
+  try {
+    // 1) Generate files first — never archive on failed export
+    const files = await generateExportFiles();
+    await packageOrDownload(files);
+    setExportProgress(100, 'Files ready. Archiving records on server…');
+
+    // 2) Archive on server
+    const ids = toArchive.map(r => r.id);
+    const result = await api('/records/archive', {
+      method: 'POST',
+      body: JSON.stringify({ ids })
+    });
+
+    const count = result.archivedCount ?? 0;
+    setExportProgress(100, `Archived ${count} record${count === 1 ? '' : 's'}.`);
+    toast(`Exported and archived ${count} record${count === 1 ? '' : 's'}`);
+
+    // Refresh list so archived rows disappear from active view
+    state.recordsLastFetched = 0;
+    await loadRecords({ force: true });
+    renderRecords();
+
+    $('#exportDoneActions')?.classList.remove('hidden');
+  } catch (err) {
+    if (errEl) {
+      errEl.textContent = (err.message || String(err)) + ' — records were NOT archived.';
+      errEl.classList.remove('hidden');
+    }
+    $('#exportDialogActions')?.classList.remove('hidden');
+    $('#exportProgress')?.classList.add('hidden');
+    toast('Archive aborted because export or server request failed');
+  } finally {
+    exportSession.archiving = false;
+  }
+}
+
+$('#exportReportBtn')?.addEventListener('click', openExportDialog);
+$('#exportDialogClose')?.addEventListener('click', closeExportDialog);
+$('#exportCancelBtn')?.addEventListener('click', closeExportDialog);
+$('#exportKeepBtn')?.addEventListener('click', () => {
+  exportSession.mode = 'keep';
+  runExportKeep();
+});
+$('#exportArchiveBtn')?.addEventListener('click', () => {
+  exportSession.mode = 'archive';
+  runExportArchive();
+});
+$('#exportArchiveBackBtn')?.addEventListener('click', () => {
+  $('#exportArchiveConfirmActions')?.classList.add('hidden');
+  $('#exportDialogActions')?.classList.remove('hidden');
+});
+$('#exportArchiveConfirmBtn')?.addEventListener('click', confirmArchiveAfterExport);
+$('#exportDoneBtn')?.addEventListener('click', closeExportDialog);
+$('#exportRetryBtn')?.addEventListener('click', () => {
+  $('#exportDoneActions')?.classList.add('hidden');
+  $('#exportDownloadLinks')?.classList.add('hidden');
+  if (exportSession.mode === 'archive') confirmArchiveAfterExport();
+  else runExportKeep();
 });
 
 /* ============================================================
