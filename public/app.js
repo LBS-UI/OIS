@@ -209,14 +209,12 @@ function showApp() {
 }
 
 async function checkSession() {
-  // Clear the HTML placeholder immediately so status never sticks on "Checking connection"
   if (!navigator.onLine) {
     setConnection(false, 'Offline');
   } else {
     setConnection(false, 'Connecting…');
   }
 
-  // Always show the app directly (no homepage / login wall)
   showApp();
   try { navigate('home'); } catch (e) { console.warn('[NextGen] navigate:', e); }
 
@@ -229,7 +227,6 @@ async function checkSession() {
       state.apiReady = false;
       setConnection(false, 'Offline');
     } else if (e && (e.status === 401 || e.status === 403)) {
-      // Worker is up; user is simply not signed in
       state.apiReady = true;
       setConnection(true, 'Open registration');
       const logout = $('#logoutBtn');
@@ -533,7 +530,6 @@ async function loadRecords(opts = {}) {
     let qs = '';
     if (archView === 'archived') qs = '?archived=only';
     else if (archView === 'all') qs = '?include_archived=1';
-    // default: active only (server excludes archived)
     const result = await api('/records' + qs);
     state.records = Array.isArray(result.records) ? result.records : [];
     if (result.dataGeneration != null && window.OfflineDB) {
@@ -552,16 +548,14 @@ async function loadRecords(opts = {}) {
     state.apiReady = true;
     state.hasLoadedOnce = true;
     state.recordsLastFetched = Date.now();
-    // Keep prior auth-based label if already set to Open registration; otherwise show connected
     const ct = $('#connectionText')?.textContent || '';
     if (ct !== 'Open registration') setConnection(true, 'Cloud connected');
     populateSectionFilter();
     renderRecords();
-    renderHome(); // updates total / category counts (shows 0 when empty)
+    renderHome();
     updateRecordsUpdatedIndicator();
   } catch (e) {
     if (e.status === 401) {
-      // Session required for this filter view; still clear loading state and show zeros
       state.records = state.records || [];
       renderHome();
       return;
@@ -569,7 +563,7 @@ async function loadRecords(opts = {}) {
     state.apiReady = false;
     if (!navigator.onLine) setConnection(false, 'Offline');
     else setConnection(false, 'API unavailable');
-    renderHome(); // keep counts consistent (previous data or empty)
+    renderHome();
     if (tableEl) {
       tableEl.innerHTML = `<div class="empty-state">
         <span class="empty-symbol">!</span>
@@ -597,7 +591,6 @@ function updateRecordsUpdatedIndicator() {
 }
 setInterval(updateRecordsUpdatedIndicator, 15000);
 
-// Cross-device sync — refresh when the tab returns and data is stale
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   if (!state.apiReady) return;
@@ -605,7 +598,6 @@ document.addEventListener('visibilitychange', () => {
   loadRecords();
 });
 
-// Manual refresh button
 $('#refreshRecordsBtn')?.addEventListener('click', () => {
   const btn = $('#refreshRecordsBtn');
   if (btn) btn.disabled = true;
@@ -687,7 +679,6 @@ function renderRecords() {
     return;
   }
 
-  // Fixed: use PAGE_SIZE not an undefined state.pageSize
   const startIdx = (state.recordPage - 1) * PAGE_SIZE + 1;
   const rows = pageRecords.map((r, i) => recordRow(r, startIdx + i)).join('');
   tableEl.innerHTML = `<div class="sheet-wrap"><table class="sheet"><thead><tr>
@@ -1060,7 +1051,6 @@ function categoryChip(cat) {
    EXPORTS — multi-format CSV / Excel / PDF + safe archive
    ============================================================ */
 function getExportSourceRecords() {
-  // Always respect current search / filters / archived view
   return getFilteredRecords();
 }
 
@@ -1130,7 +1120,6 @@ function buildCsvBlob(rows) {
   const keys = Object.keys(rows[0]);
   const safe = v => {
     let s = String(v ?? '');
-    // Preserve leading zeros and prevent formula injection
     if (/^[=+\-@\t\r]/.test(s) || /^\d+$/.test(s)) s = "'" + s;
     return `"${s.replace(/"/g, '""')}"`;
   };
@@ -1214,14 +1203,12 @@ async function preloadExportLibs() {
 
 async function buildXlsxBlob(rows) {
   const XLSX = await ensureXLSX();
-  // Force PC Number and similar fields to text to keep leading zeros
   const sheetRows = rows.map(r => {
     const out = { ...r };
     if (out['PC Number'] != null) out['PC Number'] = String(out['PC Number']);
     return out;
   });
   const ws = XLSX.utils.json_to_sheet(sheetRows);
-  // Mark PC Number column as text where possible
   const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
   for (let R = range.s.r + 1; R <= range.e.r; ++R) {
     const addr = XLSX.utils.encode_cell({ r: R, c: 0 });
@@ -1238,7 +1225,6 @@ async function buildXlsxBlob(rows) {
 
 async function buildPdfBlob(records) {
   const JsPDF = await ensureJsPDF();
-  // Best-effort: attach autoTable plugin, fall back to plain text if it fails
   try { await ensureAutoTable(); } catch (e) { console.warn('[NextGen] autoTable:', e.message); }
 
   const doc = new JsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
@@ -1288,8 +1274,8 @@ async function buildPdfBlob(records) {
 const exportSession = {
   records: [],
   formats: [],
-  files: [], // { name, blob, format }
-  mode: null, // 'keep' | 'archive'
+  files: [],
+  mode: null,
   archiving: false
 };
 
@@ -1299,7 +1285,6 @@ function openExportDialog() {
   if (!formats.length) { toast('Select at least one format (CSV, Excel, or PDF)'); return; }
   if (!records.length) { toast('There are no records to export for the current filters'); return; }
 
-  // Kick off loading of any missing libraries in the background so the build phase is fast.
   if (formats.includes('xlsx')) ensureXLSX().catch(() => {});
   if (formats.includes('pdf'))  { ensureJsPDF().catch(() => {}); ensureAutoTable().catch(() => {}); }
   if (formats.length > 1)       { ensureJSZip().catch(() => {}); }
@@ -1397,13 +1382,11 @@ function presentDownloadLinks(files) {
     a.textContent = `Download ${f.name}`;
     a.rel = 'noopener';
     box.appendChild(a);
-    // Auto-trigger first file; remaining via links (browser multi-download limits)
     setTimeout(() => URL.revokeObjectURL(url), 120000);
   });
 }
 
 async function packageOrDownload(files) {
-  // Lazily load JSZip if we might need it for the ZIP path
   let JSZipLib = window.JSZip;
   if (files.length > 1 && !JSZipLib) {
     try { JSZipLib = await ensureJSZip(); } catch (_) { JSZipLib = null; }
@@ -1418,7 +1401,6 @@ async function packageOrDownload(files) {
     presentDownloadLinks([{ name: zipName, blob: zipBlob, format: 'zip' }, ...files]);
     return;
   }
-  // Single file or no JSZip: trigger downloads and show links
   for (const f of files) {
     try { downloadBlob(f.blob, f.name); } catch (_) {}
   }
@@ -1433,7 +1415,6 @@ async function runExportKeep() {
     const { files, errors } = await generateExportFiles();
 
     if (!files.length) {
-      // Total failure — restore actions so the user can retry or deselect failing formats
       if (errEl) {
         const detail = errors.map(e => `${e.format.toUpperCase()}: ${e.message}`).join('; ');
         errEl.textContent = `Export failed — ${detail || 'no files could be generated'}`;
@@ -1445,7 +1426,6 @@ async function runExportKeep() {
       return;
     }
 
-    // Partial success — surface which formats failed but still deliver the rest
     if (errors.length) {
       const detail = errors.map(e => `${e.format.toUpperCase()}: ${e.message}`).join('; ');
       if (errEl) {
@@ -1490,7 +1470,6 @@ async function runExportArchive() {
     return;
   }
 
-  // Offline safeguard — never wipe rows that still have pending local changes
   const conflicts = await checkPendingConflicts(toDelete.map(r => r.id));
   if (conflicts.length) {
     const errEl = $('#exportError');
@@ -1502,7 +1481,6 @@ async function runExportArchive() {
     return;
   }
 
-  // Show explicit final confirmation (permanent wipe)
   $('#exportDialogActions')?.classList.add('hidden');
   const conf = $('#exportArchiveConfirmActions');
   conf?.classList.remove('hidden');
@@ -1512,6 +1490,43 @@ async function runExportArchive() {
   }
   const confirmBtn = $('#exportArchiveConfirmBtn');
   if (confirmBtn) confirmBtn.textContent = 'Confirm permanent delete';
+}
+
+/* ============================================================
+   DELETE — endpoint shapes tried in order, with verification
+   ============================================================ */
+const DELETE_ATTEMPTS = [
+  { label: 'POST /records/archive {ids, permanent:true}',       path: '/records/archive',          method: 'POST',   build: (ids) => ({ ids, permanent: true }) },
+  { label: 'POST /records/archive {recordIds, permanent:true}', path: '/records/archive',          method: 'POST',   build: (ids) => ({ recordIds: ids, permanent: true }) },
+  { label: 'POST /records/archive {ids, permanent:"true"}',     path: '/records/archive',          method: 'POST',   build: (ids) => ({ ids, permanent: 'true' }) },
+  { label: 'DELETE /records {ids, permanent:true}',             path: '/records',                  method: 'DELETE', build: (ids) => ({ ids, permanent: true }) },
+  { label: 'POST /records/bulk-delete {ids}',                   path: '/records/bulk-delete',      method: 'POST',   build: (ids) => ({ ids }) },
+  { label: 'POST /records/permanent-delete {ids}',              path: '/records/permanent-delete', method: 'POST',   build: (ids) => ({ ids }) },
+  { label: 'POST /admin/records/purge {ids}',                   path: '/admin/records/purge',      method: 'POST',   build: (ids) => ({ ids }) }
+];
+
+async function tryDeleteOnServer(ids) {
+  let lastErr = null;
+  for (const a of DELETE_ATTEMPTS) {
+    try {
+      console.log('[NextGen delete] trying:', a.label);
+      const result = await api(a.path, {
+        method: a.method,
+        timeout: 60000,
+        body: JSON.stringify(a.build(ids))
+      });
+      console.log('[NextGen delete] SUCCESS via', a.label, '→', result);
+      return { result, attempt: a };
+    } catch (err) {
+      const status = err && err.status;
+      console.warn('[NextGen delete] failed:', a.label, '→', status || '(no status)', err.message);
+      lastErr = err;
+      if (status === 401 || status === 403) throw err;
+      if (status === 404 || status === 405 || status === 400 || status === 422) continue;
+      throw err;
+    }
+  }
+  throw lastErr || new Error('No delete endpoint responded');
 }
 
 async function confirmArchiveAfterExport() {
@@ -1525,64 +1540,88 @@ async function confirmArchiveAfterExport() {
 
   let phase = 'export';
   try {
-    // ── Phase 1: Export — must fully succeed before we delete anything ──
+    /* ── Phase 1: Export ── */
     const { files, errors } = await generateExportFiles();
     if (errors.length || files.length !== exportSession.formats.length) {
       const detail = errors.map(e => `${e.format.toUpperCase()}: ${e.message}`).join('; ')
         || 'one or more formats could not be generated';
       throw new Error(`Export incomplete — ${detail}. Records were NOT deleted.`);
     }
-    if (!files.length) {
-      throw new Error('Export produced no files. Records were NOT deleted.');
-    }
+    if (!files.length) throw new Error('Export produced no files. Records were NOT deleted.');
     await packageOrDownload(files);
     setExportProgress(100, 'Files ready. Sending delete request to server…');
 
-    // ── Phase 2: Permanent delete — longer timeout for bulk operations ──
+    /* ── Phase 2: Delete ── */
     phase = 'delete';
     const ids = toDelete.map(r => r.id);
-    let result;
-    try {
-      result = await api('/records/archive', {
-        method: 'POST',
-        timeout: 60000,
-        body: JSON.stringify({ ids, permanent: true })
-      });
-    } catch (authErr) {
-      if (authErr && authErr.status === 401) {
-        throw new Error('Sign in as staff is required before permanently deleting records.');
-      }
-      if (authErr && authErr.status === 404) {
-        throw new Error('Server does not expose /records/archive — the Worker route is missing.');
-      }
-      throw authErr;
-    }
+    const { result, attempt } = await tryDeleteOnServer(ids);
 
-    const count = result.deletedCount ?? result.archivedCount ?? 0;
-    const warned = result && result.warning ? ' ' + result.warning : '';
-    setExportProgress(100, `Permanently deleted ${count} record${count === 1 ? '' : 's'}.`);
-    toast(`Exported and permanently deleted ${count} record${count === 1 ? '' : 's'}${warned}`);
+    const count = (result && (result.deletedCount ?? result.archivedCount ?? result.deleted)) ?? 0;
+    console.log('[NextGen delete] server reported count:', count, 'via', attempt.label);
 
-    // Drop deleted ids from local state and refresh
-    const gone = new Set(ids);
-    state.records = state.records.filter(r => !gone.has(r.id));
+    /* ── Phase 3: Verify ── */
+    phase = 'verify';
+    setExportProgress(100, 'Verifying with server…');
+
     state.recordsLastFetched = 0;
     await loadRecords({ force: true });
+
+    let archivedList = [];
+    try {
+      const arch = await api('/records?archived=only');
+      archivedList = Array.isArray(arch.records) ? arch.records : [];
+    } catch (e) { console.warn('[NextGen delete] archived-view check failed:', e.message); }
+
+    const idSet = new Set(ids);
+    const stillActive   = state.records.filter(r => idSet.has(r.id));
+    const stillArchived = archivedList.filter(r => idSet.has(r.id));
+
+    console.log('[NextGen delete] verification:', {
+      requested: ids.length,
+      stillActive: stillActive.length,
+      stillArchived: stillArchived.length
+    });
+
+    if (stillArchived.length > 0) {
+      throw new Error(
+        `Server archived ${stillArchived.length} record(s) but did NOT permanently delete them. ` +
+        `The Worker's ${attempt.label} returned a response but the rows still exist under the archived filter. ` +
+        `The Worker must run DELETE FROM records (not UPDATE records SET archived=1) when permanent:true.`
+      );
+    }
+    if (stillActive.length > 0) {
+      throw new Error(
+        `Server reported ${count} deleted record(s) but ${stillActive.length} of the ${ids.length} requested record(s) ` +
+        `are still in the active view. The Worker's ${attempt.label} is not actually deleting rows.`
+      );
+    }
+
+    /* ── Success ── */
+    setExportProgress(100, `Permanently deleted ${count} record${count === 1 ? '' : 's'} (verified).`);
+    toast(`Exported and permanently deleted ${count} record${count === 1 ? '' : 's'}`);
+
+    const gone = new Set(ids);
+    state.records = state.records.filter(r => !gone.has(r.id));
     renderRecords();
     renderHome();
-
     $('#exportDoneActions')?.classList.remove('hidden');
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
     if (errEl) {
-      errEl.textContent = (phase === 'export' ? 'Export failed: ' : 'Delete failed: ') + message;
+      errEl.textContent =
+        (phase === 'export'   ? 'Export failed: '
+       : phase === 'delete'   ? 'Delete failed: '
+       :                        'Verification failed: ') + message;
       errEl.classList.remove('hidden');
     }
     $('#exportDialogActions')?.classList.remove('hidden');
     $('#exportProgress')?.classList.add('hidden');
-    toast(phase === 'export'
-      ? 'Export failed — nothing was deleted'
-      : 'Delete failed — refresh records to verify');
+    toast(
+      phase === 'export' ? 'Export failed — nothing was deleted'
+    : phase === 'delete' ? 'Delete request was rejected — see details'
+    :                      'Server accepted the delete but records are still there — see details'
+    );
+    console.error('[NextGen delete] final error:', phase, err);
   } finally {
     exportSession.archiving = false;
   }
@@ -1732,7 +1771,6 @@ $('#scanForm')?.addEventListener('submit', async e => {
 });
 
 updateCategoryFields();
-// NOTE: checkSession() is invoked at the end of this file.
 
 /* ============================================================
    CAMERA SCANNER — with specific error guidance
@@ -1935,7 +1973,6 @@ async function refreshNotifications() {
     n.state.available = true;
     n.state.lastError = null;
 
-    // Play sound only for new unread notifications
     const previousIds = n.state.seenIds || new Set();
     const currentIds = new Set();
     let hasNewUnread = false;
@@ -2217,7 +2254,7 @@ function renderScoreEditor(record) {
     </div>`;
 
   $('#cancelScoresBtn')?.addEventListener('click', () => {
-    renderScoreEditor(record); // reset to original values
+    renderScoreEditor(record);
     const m = $('#scoreMessage');
     if (m) { m.textContent = 'Changes discarded.'; m.className = 'form-message'; }
   });
@@ -2433,7 +2470,6 @@ async function syncQueue() {
   }
 }
 
-// Cache records after successful load
 const _origLoadRecords = loadRecords;
 loadRecords = async function () {
   await _origLoadRecords();
@@ -2442,7 +2478,6 @@ loadRecords = async function () {
   }
 };
 
-// Queue scan events when offline
 const _origRecordScan = recordScanEvent;
 recordScanEvent = async function (recordId) {
   if (!navigator.onLine) {
@@ -2454,7 +2489,6 @@ recordScanEvent = async function (recordId) {
   return _origRecordScan(recordId);
 };
 
-// Service worker registration — pick up new deploys without requiring a manual hard refresh
 if ('serviceWorker' in navigator) {
   let refreshing = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
@@ -2464,7 +2498,6 @@ if ('serviceWorker' in navigator) {
   });
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').then((reg) => {
-      // Check for updates when the tab becomes visible again
       document.addEventListener('visibilitychange', () => {
         if (!document.hidden) reg.update().catch(() => {});
       });
@@ -2483,7 +2516,6 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-// Online/offline events
 window.addEventListener('online', () => {
   updateOnlineStatus();
   syncQueue();
@@ -2525,7 +2557,6 @@ function openWipeDialog() {
   const exec = $('#wipeExecuteBtn');
   if (exec) exec.disabled = false;
   wipeSetStep(1);
-  // Resolve actor from /api/me when possible
   api('/me').then((r) => {
     wipeActor = (r && r.user && r.user.username) || 'staff';
     if ($('#wipeActorName')) $('#wipeActorName').textContent = wipeActor;
@@ -2545,7 +2576,6 @@ function closeWipeDialog() {
 }
 
 async function executeWipe() {
-  // Guard: prevent duplicate concurrent submissions
   if (wipeInFlight) return;
 
   const errEl = $('#wipeError');
@@ -2565,13 +2595,11 @@ async function executeWipe() {
   let category = 'UNKNOWN_ERROR';
 
   try {
-    // --- Sequential client checks ---
     if (!navigator.onLine) {
       category = 'NETWORK_ERROR';
       throw new Error('You are offline. Permanent delete requires a live connection to the server.');
     }
 
-    // Call server (auth is enforced server-side)
     try {
       result = await api('/admin/wipe-data', {
         method: 'POST',
@@ -2600,8 +2628,6 @@ async function executeWipe() {
       throw new Error(parts.join(' '));
     }
 
-    // --- Server response shape ---
-    // Accept success: true OR ok: true (never trust HTTP alone without body check)
     const succeeded = !!(result && (result.success === true || result.ok === true));
     if (!succeeded) {
       category = (result && result.code) || 'PERMANENT_DELETE_FAILED';
@@ -2610,7 +2636,6 @@ async function executeWipe() {
       throw new Error(msg + ' [' + category + ']' + op);
     }
 
-    // --- Only after confirmed success: local cleanup + UI refresh ---
     if (clearLocal && window.OfflineDB) {
       try {
         await OfflineDB.clearQueue();
@@ -2655,7 +2680,6 @@ async function executeWipe() {
       errEl.textContent = text;
       errEl.classList.remove('hidden');
     }
-    // Do NOT clear local queues on failure
     toast('Deletion did not complete — ' + (category || 'see dialog'));
     $('#wipeActions3')?.classList.remove('hidden');
     if (exec) exec.disabled = false;
@@ -2689,7 +2713,6 @@ $('#wipeContinue2')?.addEventListener('click', () => {
 });
 $('#wipeBack3')?.addEventListener('click', () => wipeSetStep(2));
 $('#wipeExecuteBtn')?.addEventListener('click', () => {
-  // Re-check phrase on final click in case user went back
   const typed = ($('#wipeConfirmInput')?.value || '').trim();
   if (typed !== 'DELETE ALL DATA') {
     toast('Confirmation phrase no longer matches — go back and re-enter DELETE ALL DATA');
@@ -2700,7 +2723,6 @@ $('#wipeExecuteBtn')?.addEventListener('click', () => {
 });
 $('#wipeDoneBtn')?.addEventListener('click', closeWipeDialog);
 
-// UI bindings
 document.addEventListener('DOMContentLoaded', () => {
   $('#queueBadge')?.addEventListener('click', () => {
     $('#offlinePanel')?.classList.remove('hidden');
@@ -2722,8 +2744,6 @@ document.addEventListener('DOMContentLoaded', () => {
   refreshQueueUI();
 });
 
-// Start session + dashboard load after script initialization
 checkSession();
 
-// Defer library preloading so it doesn't compete with first paint / auth.
 setTimeout(() => { preloadExportLibs().catch(() => {}); }, 2000);
