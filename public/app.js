@@ -149,8 +149,10 @@ async function api(path, options = {}) {
       const e = new Error(data.error || `Request failed (${res.status})`);
       e.status = res.status;
       e.code = data.code || null;
-      e.operationId = data.operationId || null;
+      e.operationId = data.operationId || data.requestId || null;
+      e.stage = data.stage || null;
       e.deletedOk = data.deletedOk;
+      e.success = data.success;
       throw e;
     }
     return data;
@@ -2415,11 +2417,14 @@ function closeWipeDialog() {
 }
 
 async function executeWipe() {
+  // Guard: prevent duplicate concurrent submissions
   if (wipeInFlight) return;
+
   const errEl = $('#wipeError');
   const okEl = $('#wipeSuccess');
   errEl?.classList.add('hidden');
   okEl?.classList.add('hidden');
+  if (okEl) okEl.textContent = '';
 
   wipeInFlight = true;
   const exec = $('#wipeExecuteBtn');
@@ -2427,9 +2432,18 @@ async function executeWipe() {
   $('#wipeProgress')?.classList.remove('hidden');
   $('#wipeActions3')?.classList.add('hidden');
 
+  const clearLocal = !!$('#wipeClearLocalCheck')?.checked;
+  let result = null;
+  let category = 'UNKNOWN_ERROR';
+
   try {
-    const clearLocal = !!$('#wipeClearLocalCheck')?.checked;
-    let result;
+    // --- Sequential client checks ---
+    if (!navigator.onLine) {
+      category = 'NETWORK_ERROR';
+      throw new Error('You are offline. Permanent delete requires a live connection to the server.');
+    }
+
+    // Call server (auth is enforced server-side)
     try {
       result = await api('/admin/wipe-data', {
         method: 'POST',
@@ -2437,62 +2451,84 @@ async function executeWipe() {
           confirmationPhrase: 'DELETE ALL DATA',
           permanent: true,
           scopes: ['records', 'scan_events'],
-        })
+        }),
       });
     } catch (apiErr) {
-      // api() throws Error with .status; message is server error string
+      const status = apiErr && apiErr.status;
+      if (status === 401) category = 'AUTH_REQUIRED';
+      else if (status === 403) category = 'FORBIDDEN';
+      else if (status === 400 || status === 405) category = 'INVALID_REQUEST';
+      else if (status === 0 || apiErr.name === 'TypeError') category = 'NETWORK_ERROR';
+      else if (apiErr && apiErr.code) category = apiErr.code;
+      else category = 'PERMANENT_DELETE_FAILED';
+
       const parts = [
         apiErr && apiErr.message ? apiErr.message : 'Server request failed',
       ];
-      if (apiErr && apiErr.status) parts.push(`(HTTP ${apiErr.status})`);
-      // Surface structured fields when present on the Error (attached below if we enhance api)
-      if (apiErr && apiErr.code) parts.push(`[${apiErr.code}]`);
-      if (apiErr && apiErr.operationId) parts.push(`op ${apiErr.operationId}`);
+      if (status) parts.push('(HTTP ' + status + ')');
+      parts.push('[' + category + ']');
+      if (apiErr && apiErr.operationId) parts.push('op ' + apiErr.operationId);
+      if (apiErr && apiErr.stage) parts.push('stage=' + apiErr.stage);
       throw new Error(parts.join(' '));
     }
 
-    if (!result || !result.ok) {
-      throw new Error((result && result.error) || 'Wipe did not complete');
+    // --- Server response shape ---
+    // Accept success: true OR ok: true (never trust HTTP alone without body check)
+    const succeeded = !!(result && (result.success === true || result.ok === true));
+    if (!succeeded) {
+      category = (result && result.code) || 'PERMANENT_DELETE_FAILED';
+      const msg = (result && result.error) || 'Server did not confirm deletion success.';
+      const op = result && result.operationId ? ' op ' + result.operationId : '';
+      throw new Error(msg + ' [' + category + ']' + op);
     }
 
-    // Local cleanup only after server success, and only if requested
+    // --- Only after confirmed success: local cleanup + UI refresh ---
     if (clearLocal && window.OfflineDB) {
       try {
         await OfflineDB.clearQueue();
         await OfflineDB.clearCachedRecords();
-        if (result.dataGeneration) await OfflineDB.setDataGeneration(result.dataGeneration);
+        if (result.dataGeneration != null) await OfflineDB.setDataGeneration(result.dataGeneration);
       } catch (e) {
-        console.warn('[NextGen] Local cleanup after wipe:', e);
+        console.warn('[NextGen] Local cleanup after confirmed wipe:', e);
       }
-    } else if (result.dataGeneration && window.OfflineDB) {
+    } else if (result.dataGeneration != null && window.OfflineDB) {
       try { await OfflineDB.setDataGeneration(result.dataGeneration); } catch (_) {}
     }
 
     state.records = [];
     state.recordsLastFetched = 0;
-    await loadRecords({ force: true });
+    try {
+      await loadRecords({ force: true });
+    } catch (e) {
+      console.warn('[NextGen] reload after wipe:', e);
+    }
     renderHome();
     renderRecords();
 
     const deleted = result.deleted || {};
     const msg =
-      `Permanent wipe completed by ${esc(result.actor || wipeActor)}. ` +
-      `Removed approximately ${deleted.records ?? 0} registration record(s) and ${deleted.scan_events ?? 0} scan event(s). ` +
-      `Staff accounts and audit logs were preserved. Dataset generation is now ${result.dataGeneration ?? '—'}.` +
-      (result.operationId ? ` Operation ID: ${esc(result.operationId)}.` : '') +
-      (result.warning ? ` Note: ${esc(result.warning)}` : '');
+      'Permanent wipe confirmed. ' +
+      'Removed ~' + (deleted.records ?? 0) + ' registration record(s) and ~' +
+      (deleted.scan_events ?? 0) + ' scan event(s). ' +
+      'Staff accounts and audit logs were preserved. ' +
+      (result.dataGeneration != null ? 'Dataset generation: ' + result.dataGeneration + '. ' : '') +
+      (result.operationId ? 'Operation ID: ' + result.operationId + '. ' : '') +
+      (result.warning ? 'Note: ' + result.warning : '');
+
     if (okEl) {
-      okEl.innerHTML = msg;
+      okEl.textContent = msg;
       okEl.classList.remove('hidden');
     }
     toast('Permanent data wipe completed');
     wipeSetStep('done');
   } catch (err) {
+    const text = (err && err.message) ? err.message : String(err);
     if (errEl) {
-      errEl.textContent = (err && err.message) ? err.message : String(err);
+      errEl.textContent = text;
       errEl.classList.remove('hidden');
     }
-    toast('Wipe failed — see the error details in the dialog');
+    // Do NOT clear local queues on failure
+    toast('Deletion did not complete — ' + (category || 'see dialog'));
     $('#wipeActions3')?.classList.remove('hidden');
     if (exec) exec.disabled = false;
   } finally {

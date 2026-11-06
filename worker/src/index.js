@@ -493,146 +493,253 @@ export default {
       return json({ ok: true, user: { username: user }, dataGeneration });
     }
 
-    // ---------- Permanent wipe of student/participant data (authenticated admin only) ----------
-    // Scope is server-side allowlisted. Never deletes users or audit_logs.
-    if (path === '/api/admin/wipe-data' && method === 'POST') {
+    // ---------- Permanent wipe — sequential validation (authenticated staff only) ----------
+    // Auth already enforced above via requireUser → user is set.
+    // Never deletes users, audit_logs, or credentials.
+    if (path === '/api/admin/wipe-data') {
       const operationId = uuid();
-      let body;
-      try { body = await bodyJson(request); } catch (e) {
-        return json({ error: e.message, code: 'INVALID_JSON', operationId }, 400);
+
+      // Step A — method + body
+      if (method !== 'POST') {
+        return json({
+          success: false,
+          ok: false,
+          error: 'Use POST for permanent delete.',
+          code: 'INVALID_REQUEST',
+          stage: 'request_validation',
+          operationId,
+        }, 405);
       }
 
+      let body;
+      try {
+        body = await bodyJson(request);
+      } catch (e) {
+        return json({
+          success: false,
+          ok: false,
+          error: e.message || 'Request body must be valid JSON.',
+          code: 'INVALID_REQUEST',
+          stage: 'request_validation',
+          operationId,
+        }, 400);
+      }
+
+      // Step A continued — required fields
       const phrase = String(body.confirmationPhrase || '').trim();
       if (phrase !== 'DELETE ALL DATA') {
         return json({
-          error: 'Confirmation phrase does not match. Type DELETE ALL DATA exactly.',
-          code: 'PHRASE_MISMATCH',
+          success: false,
+          ok: false,
+          error: 'Confirmation phrase must be exactly: DELETE ALL DATA',
+          code: 'INVALID_REQUEST',
+          stage: 'request_validation',
           operationId,
         }, 400);
       }
       if (body.permanent !== true) {
         return json({
-          error: 'permanent: true is required for this operation.',
-          code: 'PERMANENT_FLAG_REQUIRED',
+          success: false,
+          ok: false,
+          error: 'permanent: true is required.',
+          code: 'INVALID_REQUEST',
+          stage: 'request_validation',
           operationId,
         }, 400);
       }
 
+      // Step B — authorization already passed (requireUser). user is authenticated staff.
+      // (No further role table exists in this project beyond session login.)
+
+      // Step C — scope allowlist + DB reachability
       const ALLOWED_SCOPES = new Set(['records', 'scan_events']);
-      const requested = Array.isArray(body.scopes) ? body.scopes.map((s) => String(s)) : ['records', 'scan_events'];
+      const requested = Array.isArray(body.scopes)
+        ? body.scopes.map((s) => String(s))
+        : ['records', 'scan_events'];
       const scopes = [...new Set(requested.filter((s) => ALLOWED_SCOPES.has(s)))];
       if (!scopes.length) {
         return json({
-          error: 'No valid deletion scopes selected. Allowed: records, scan_events.',
-          code: 'INVALID_SCOPE',
+          success: false,
+          ok: false,
+          error: 'No valid scopes. Allowed: records, scan_events.',
+          code: 'DATABASE_VALIDATION_FAILED',
+          stage: 'database_validation',
           operationId,
         }, 400);
       }
 
       if (wipeInProgress) {
         return json({
-          error: 'A wipe operation is already in progress. Wait for it to finish.',
+          success: false,
+          ok: false,
+          error: 'Another wipe is already running. Wait and retry.',
           code: 'WIPE_IN_PROGRESS',
+          stage: 'database_validation',
           operationId,
         }, 409);
       }
-      wipeInProgress = true;
 
+      // Prove D1 binding works before deleting
+      try {
+        await env.DB.prepare('SELECT 1 AS ok').first();
+      } catch (e) {
+        console.error('[NextGen] wipe DB probe failed', operationId, e && e.message);
+        return json({
+          success: false,
+          ok: false,
+          error: 'Database is not reachable from the Worker (D1 binding).',
+          code: 'DATABASE_VALIDATION_FAILED',
+          stage: 'database_validation',
+          operationId,
+        }, 500);
+      }
+
+      wipeInProgress = true;
       const ts = now();
-      const counts = { records: 0, scan_events: 0 };
+      const countsBefore = { records: 0, scan_events: 0 };
+      const countsAfter = { records: null, scan_events: null };
+      const warnings = [];
       let newGeneration = null;
-      let deletedOk = false;
 
       try {
+        // Optional counts
         try {
           const rc = await env.DB.prepare('SELECT COUNT(*) AS c FROM records').first();
-          counts.records = Number(rc && rc.c) || 0;
-        } catch (e) {
-          console.error('[NextGen] wipe count records', operationId, e && e.message);
-        }
+          countsBefore.records = Number(rc && rc.c) || 0;
+        } catch (_) {}
         try {
           const sc = await env.DB.prepare('SELECT COUNT(*) AS c FROM scan_events').first();
-          counts.scan_events = Number(sc && sc.c) || 0;
-        } catch (e) {
-          console.error('[NextGen] wipe count scan_events', operationId, e && e.message);
-        }
+          countsBefore.scan_events = Number(sc && sc.c) || 0;
+        } catch (_) {}
 
-        // Dependency-safe order: child scan_events first, then records
+        // Step D — sequential deletes (child table first)
+        // D1 does not expose multi-statement transactions the same way as full SQLite;
+        // we delete in dependency order and verify emptiness afterward.
         if (scopes.includes('scan_events') || scopes.includes('records')) {
           try {
             await env.DB.prepare('DELETE FROM scan_events').run();
           } catch (e) {
             const msg = String(e && e.message ? e.message : e);
-            console.error('[NextGen] wipe DELETE scan_events', operationId, msg);
-            // If table is missing, continue; if real error, abort before records delete
             if (!/no such table/i.test(msg)) {
-              throw Object.assign(new Error('Failed to delete scan_events: ' + msg), { code: 'DELETE_SCAN_EVENTS' });
+              console.error('[NextGen] wipe DELETE scan_events', operationId, msg);
+              return json({
+                success: false,
+                ok: false,
+                error: 'Failed deleting scan_events: ' + msg,
+                code: 'PERMANENT_DELETE_FAILED',
+                stage: 'sql_execution',
+                operationId,
+              }, 500);
             }
+            warnings.push('scan_events table missing — skipped');
           }
         }
+
         if (scopes.includes('records')) {
           try {
             await env.DB.prepare('DELETE FROM records').run();
           } catch (e) {
             const msg = String(e && e.message ? e.message : e);
             console.error('[NextGen] wipe DELETE records', operationId, msg);
-            throw Object.assign(new Error('Failed to delete records: ' + msg), { code: 'DELETE_RECORDS' });
+            return json({
+              success: false,
+              ok: false,
+              error: 'Failed deleting records: ' + msg,
+              code: 'PERMANENT_DELETE_FAILED',
+              stage: 'sql_execution',
+              operationId,
+            }, 500);
           }
         }
-        deletedOk = true;
 
-        // Generation bump is important for offline safety but must not flip a successful wipe to failure
+        // Verify deletion actually emptied the tables
+        if (scopes.includes('records')) {
+          try {
+            const rc = await env.DB.prepare('SELECT COUNT(*) AS c FROM records').first();
+            countsAfter.records = Number(rc && rc.c) || 0;
+            if (countsAfter.records > 0) {
+              return json({
+                success: false,
+                ok: false,
+                error: 'Delete ran but records still remain (' + countsAfter.records + ').',
+                code: 'PERMANENT_DELETE_FAILED',
+                stage: 'sql_execution',
+                operationId,
+                countsBefore,
+                countsAfter,
+              }, 500);
+            }
+          } catch (e) {
+            warnings.push('Could not verify records count after delete');
+          }
+        }
+        if (scopes.includes('scan_events') || scopes.includes('records')) {
+          try {
+            const sc = await env.DB.prepare('SELECT COUNT(*) AS c FROM scan_events').first();
+            countsAfter.scan_events = Number(sc && sc.c) || 0;
+          } catch (_) {}
+        }
+
+        // Step E — post-delete bookkeeping (non-fatal)
         try {
           newGeneration = await bumpDataGeneration(env);
         } catch (e) {
-          console.error('[NextGen] wipe bumpDataGeneration', operationId, e && e.message);
-          newGeneration = null;
+          console.error('[NextGen] wipe generation', operationId, e && e.message);
+          warnings.push('data_generation not updated (run migrations/002_app_meta.sql)');
+        }
+        try {
+          await writeAudit(env, {
+            action: 'permanent_wipe',
+            recordId: null,
+            actor: user,
+            details: {
+              operationId,
+              scopes,
+              countsBefore,
+              countsAfter,
+              dataGeneration: newGeneration,
+              result: 'success',
+            },
+          });
+        } catch (e) {
+          warnings.push('audit log not written');
         }
 
-        await writeAudit(env, {
-          action: 'permanent_wipe',
-          recordId: null,
-          actor: user,
-          details: {
-            operationId,
-            scopes,
-            countsBefore: counts,
-            dataGeneration: newGeneration,
-            result: 'success',
-          },
-        });
-
+        // Step E — success
         return json({
+          success: true,
           ok: true,
           permanent: true,
           scopes,
-          deleted: counts,
+          deleted: countsBefore,
+          countsAfter,
           dataGeneration: newGeneration,
           actor: user,
           at: ts,
           operationId,
-          preserved: ['users', 'audit_logs', 'app_meta', 'staff credentials'],
-          warning: newGeneration == null
-            ? 'Records were deleted, but data_generation could not be updated. Run migration 002_app_meta.sql and retry is not required unless offline devices resync old data.'
-            : undefined,
+          stage: 'complete',
+          preserved: ['users', 'audit_logs', 'staff credentials'],
+          warning: warnings.length ? warnings.join(' · ') : undefined,
+          message: 'Permanent deletion completed.',
         });
       } catch (e) {
         const msg = String(e && e.message ? e.message : e);
-        const code = (e && e.code) || 'WIPE_FAILED';
-        console.error('[NextGen] wipe failed', operationId, code, msg);
-        await writeAudit(env, {
-          action: 'permanent_wipe_failed',
-          recordId: null,
-          actor: user,
-          details: { operationId, scopes, code, error: msg.slice(0, 400), deletedOk },
-        });
+        console.error('[NextGen] wipe unexpected', operationId, msg);
+        try {
+          await writeAudit(env, {
+            action: 'permanent_wipe_failed',
+            recordId: null,
+            actor: user,
+            details: { operationId, error: msg.slice(0, 400) },
+          });
+        } catch (_) {}
         return json({
-          error: deletedOk
-            ? 'Records may already have been deleted, but the operation did not finish cleanly: ' + msg
-            : 'Wipe failed before data was confirmed deleted: ' + msg,
-          code,
+          success: false,
+          ok: false,
+          error: 'Unexpected server error during wipe: ' + msg,
+          code: 'UNKNOWN_ERROR',
+          stage: 'sql_execution',
           operationId,
-          deletedOk,
         }, 500);
       } finally {
         wipeInProgress = false;
@@ -652,57 +759,81 @@ export default {
 
     // ---------- Permanent delete after confirmed export (authenticated) ----------
     // Body: { ids: string[], permanent: true }
-    // When permanent is true (required), rows are hard-deleted from D1 (scan_events cascade).
     if (path === '/api/records/archive' && method === 'POST') {
+      const operationId = uuid();
       let body;
-      try { body = await bodyJson(request); } catch (e) { return fail(e.message); }
+      try { body = await bodyJson(request); } catch (e) {
+        return json({ error: e.message, code: 'INVALID_JSON', operationId }, 400);
+      }
       const ids = Array.isArray(body.ids) ? body.ids.map((id) => cleanString(id, 80)).filter(Boolean) : [];
-      if (!ids.length) return fail('Provide at least one record id to delete.');
-      if (ids.length > 500) return fail('Too many records in one request (max 500).');
-      // Require explicit permanent flag so accidental soft-archive clients cannot wipe data silently
+      if (!ids.length) {
+        return json({ error: 'Provide at least one record id to delete.', code: 'NO_IDS', operationId }, 400);
+      }
+      if (ids.length > 500) {
+        return json({ error: 'Too many records in one request (max 500).', code: 'TOO_MANY_IDS', operationId }, 400);
+      }
       if (body.permanent !== true) {
-        return fail('Permanent deletion requires permanent: true in the request body.', 400);
+        return json({
+          error: 'Permanent deletion requires permanent: true in the request body.',
+          code: 'PERMANENT_FLAG_REQUIRED',
+          operationId,
+        }, 400);
       }
 
-      const ts = now();
       const deleted = [];
       const skipped = [];
 
       try {
         for (const id of ids) {
-          const existing = await env.DB.prepare(
-            'SELECT id FROM records WHERE id = ?'
-          ).bind(id).first();
-          if (!existing) {
-            skipped.push({ id, reason: 'not_found' });
-            continue;
-          }
           try {
-            await env.DB.prepare(
-              `INSERT INTO audit_logs (id, action, record_id, actor, details, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)`
-            ).bind(uuid(), 'permanent_delete', id, user, JSON.stringify({ batchSize: ids.length }), ts).run();
-          } catch (_) { /* best-effort audit before delete */ }
+            // Delete scan_events for this record first (safe if table/FK missing)
+            try {
+              await env.DB.prepare('DELETE FROM scan_events WHERE record_id = ?').bind(id).run();
+            } catch (_) {}
 
-          const result = await env.DB.prepare(
-            'DELETE FROM records WHERE id = ?'
-          ).bind(id).run();
-          if (result.meta.changes) {
-            deleted.push(id);
-          } else {
-            skipped.push({ id, reason: 'no_change' });
+            const result = await env.DB.prepare(
+              'DELETE FROM records WHERE id = ?'
+            ).bind(id).run();
+
+            if (result.meta && result.meta.changes) {
+              deleted.push(id);
+              // Best-effort audit — never fail the delete because of logging
+              try {
+                await writeAudit(env, {
+                  action: 'permanent_delete',
+                  recordId: id,
+                  actor: user,
+                  details: { operationId, batchSize: ids.length },
+                });
+              } catch (_) {}
+            } else {
+              skipped.push({ id, reason: 'not_found_or_already_gone' });
+            }
+          } catch (e) {
+            console.error('[NextGen] permanent delete one', operationId, id, e && e.message);
+            skipped.push({ id, reason: 'error', error: String(e && e.message ? e.message : e).slice(0, 120) });
           }
         }
+
         return json({
           ok: true,
           deletedCount: deleted.length,
-          archivedCount: deleted.length, // backward-compatible alias for older frontends
+          archivedCount: deleted.length,
           deletedIds: deleted,
           skipped,
           permanent: true,
+          operationId,
         });
       } catch (e) {
-        return fail('Could not permanently delete records.', 500);
+        const msg = String(e && e.message ? e.message : e);
+        console.error('[NextGen] permanent delete batch', operationId, msg);
+        return json({
+          error: 'Could not permanently delete records: ' + msg,
+          code: 'DELETE_BATCH_FAILED',
+          operationId,
+          deletedCount: deleted.length,
+          deletedIds: deleted,
+        }, 500);
       }
     }
 
