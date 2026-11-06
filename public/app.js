@@ -132,7 +132,8 @@ function toast(message) {
 
 async function api(path, options = {}) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  const timeoutMs = Number(options.timeout) > 0 ? Number(options.timeout) : API_TIMEOUT_MS;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`/api${path}`, {
       ...options,
@@ -686,7 +687,8 @@ function renderRecords() {
     return;
   }
 
-  const startIdx = (state.recordPage - 1) * (state.pageSize || 25) + 1;
+  // Fixed: use PAGE_SIZE not an undefined state.pageSize
+  const startIdx = (state.recordPage - 1) * PAGE_SIZE + 1;
   const rows = pageRecords.map((r, i) => recordRow(r, startIdx + i)).join('');
   tableEl.innerHTML = `<div class="sheet-wrap"><table class="sheet"><thead><tr>
     <th class="row-num">#</th><th>PC Number</th><th>Full Name</th><th>Section</th>
@@ -1138,8 +1140,80 @@ function buildCsvBlob(rows) {
   return new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
 }
 
-function buildXlsxBlob(rows) {
-  if (!window.XLSX) throw new Error('Excel library did not load');
+/* ============================================================
+   EXPORT LIBRARIES — lazy loading with clear failures
+   Self-host by pointing these at /vendor/*.js to remove the CDN dependency.
+   ============================================================ */
+const EXPORT_LIB_URLS = {
+  xlsx:      'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
+  jspdf:     'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js',
+  autoTable: 'https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js',
+  jszip:     'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js'
+};
+const _exportLibPromises = {};
+
+function loadScriptOnce(src) {
+  if (_exportLibPromises[src]) return _exportLibPromises[src];
+  _exportLibPromises[src] = new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) {
+      if (existing.dataset.loaded === '1') return resolve(true);
+      existing.addEventListener('load', () => resolve(true), { once: true });
+      existing.addEventListener('error', () => reject(new Error('Failed to load ' + src)), { once: true });
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = true;
+    s.onload = () => { s.dataset.loaded = '1'; resolve(true); };
+    s.onerror = () => {
+      delete _exportLibPromises[src];
+      s.remove();
+      reject(new Error('Failed to load ' + src + ' (check CSP or network)'));
+    };
+    document.head.appendChild(s);
+  });
+  return _exportLibPromises[src];
+}
+
+async function ensureXLSX() {
+  if (window.XLSX) return window.XLSX;
+  await loadScriptOnce(EXPORT_LIB_URLS.xlsx);
+  if (!window.XLSX) throw new Error('Excel library loaded but window.XLSX is missing');
+  return window.XLSX;
+}
+
+async function ensureJsPDF() {
+  if (window.jspdf?.jsPDF) return window.jspdf.jsPDF;
+  await loadScriptOnce(EXPORT_LIB_URLS.jspdf);
+  if (!window.jspdf?.jsPDF) throw new Error('PDF library loaded but window.jspdf.jsPDF is missing');
+  return window.jspdf.jsPDF;
+}
+
+async function ensureAutoTable() {
+  const jsPDF = await ensureJsPDF();
+  if (jsPDF.API && jsPDF.API.autoTable) return;
+  await loadScriptOnce(EXPORT_LIB_URLS.autoTable);
+  if (!(jsPDF.API && jsPDF.API.autoTable)) {
+    throw new Error('PDF table plugin failed to initialise');
+  }
+}
+
+async function ensureJSZip() {
+  if (window.JSZip) return window.JSZip;
+  await loadScriptOnce(EXPORT_LIB_URLS.jszip);
+  return window.JSZip || null;
+}
+
+async function preloadExportLibs() {
+  try { await ensureXLSX(); }      catch (e) { console.warn('[NextGen] XLSX preload:', e.message); }
+  try { await ensureJsPDF(); }     catch (e) { console.warn('[NextGen] jsPDF preload:', e.message); }
+  try { await ensureAutoTable(); } catch (e) { console.warn('[NextGen] autoTable preload:', e.message); }
+  try { await ensureJSZip(); }     catch (e) { console.warn('[NextGen] JSZip preload:', e.message); }
+}
+
+async function buildXlsxBlob(rows) {
+  const XLSX = await ensureXLSX();
   // Force PC Number and similar fields to text to keep leading zeros
   const sheetRows = rows.map(r => {
     const out = { ...r };
@@ -1162,9 +1236,12 @@ function buildXlsxBlob(rows) {
   return new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 }
 
-function buildPdfBlob(records) {
-  if (!window.jspdf?.jsPDF) throw new Error('PDF library did not load');
-  const doc = new jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+async function buildPdfBlob(records) {
+  const JsPDF = await ensureJsPDF();
+  // Best-effort: attach autoTable plugin, fall back to plain text if it fails
+  try { await ensureAutoTable(); } catch (e) { console.warn('[NextGen] autoTable:', e.message); }
+
+  const doc = new JsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const generated = new Date().toLocaleString();
   doc.setFontSize(14);
   doc.text('NextGen Smart Classroom — Participant Records', 14, 14);
@@ -1189,7 +1266,7 @@ function buildPdfBlob(records) {
       styles: { fontSize: 8, cellPadding: 1.5, overflow: 'linebreak' },
       headStyles: { fillColor: [16, 44, 72], textColor: 255 },
       margin: { left: 10, right: 10 },
-      didDrawPage: (data) => {
+      didDrawPage: () => {
         const page = doc.internal.getNumberOfPages();
         doc.setFontSize(7);
         doc.setTextColor(120);
@@ -1222,7 +1299,11 @@ function openExportDialog() {
   if (!formats.length) { toast('Select at least one format (CSV, Excel, or PDF)'); return; }
   if (!records.length) { toast('There are no records to export for the current filters'); return; }
 
-  // Offline safeguard: detect pending items that match selected record ids
+  // Kick off loading of any missing libraries in the background so the build phase is fast.
+  if (formats.includes('xlsx')) ensureXLSX().catch(() => {});
+  if (formats.includes('pdf'))  { ensureJsPDF().catch(() => {}); ensureAutoTable().catch(() => {}); }
+  if (formats.length > 1)       { ensureJSZip().catch(() => {}); }
+
   exportSession.records = records;
   exportSession.formats = formats;
   exportSession.files = [];
@@ -1272,6 +1353,7 @@ async function generateExportFiles() {
   const formats = exportSession.formats;
   const rows = exportRowsFrom(records);
   const files = [];
+  const errors = [];
   const total = formats.length;
   let step = 0;
 
@@ -1283,22 +1365,23 @@ async function generateExportFiles() {
     try {
       if (fmt === 'csv') {
         const blob = buildCsvBlob(rows);
+        if (!blob) throw new Error('No data to export');
         files.push({ format: 'csv', name: stampFilename('records', 'csv'), blob });
       } else if (fmt === 'xlsx') {
-        const blob = buildXlsxBlob(rows);
+        const blob = await buildXlsxBlob(rows);
         files.push({ format: 'xlsx', name: stampFilename('records', 'xlsx'), blob });
       } else if (fmt === 'pdf') {
-        const blob = buildPdfBlob(records);
+        const blob = await buildPdfBlob(records);
         files.push({ format: 'pdf', name: stampFilename('records', 'pdf'), blob });
       }
     } catch (err) {
-      throw new Error(`Failed to build ${fmt.toUpperCase()}: ${err.message || err}`);
+      errors.push({ format: fmt, message: err && err.message ? err.message : String(err) });
     }
   }
 
   setExportProgress(95, 'Finalizing…');
   exportSession.files = files;
-  return files;
+  return { files, errors };
 }
 
 function presentDownloadLinks(files) {
@@ -1317,13 +1400,17 @@ function presentDownloadLinks(files) {
     // Auto-trigger first file; remaining via links (browser multi-download limits)
     setTimeout(() => URL.revokeObjectURL(url), 120000);
   });
-  // Prefer single ZIP when multiple formats and JSZip is available
 }
 
 async function packageOrDownload(files) {
-  if (files.length > 1 && window.JSZip) {
+  // Lazily load JSZip if we might need it for the ZIP path
+  let JSZipLib = window.JSZip;
+  if (files.length > 1 && !JSZipLib) {
+    try { JSZipLib = await ensureJSZip(); } catch (_) { JSZipLib = null; }
+  }
+  if (files.length > 1 && JSZipLib) {
     setExportProgress(98, 'Packaging ZIP…');
-    const zip = new JSZip();
+    const zip = new JSZipLib();
     for (const f of files) zip.file(f.name, f.blob);
     const zipBlob = await zip.generateAsync({ type: 'blob' });
     const zipName = stampFilename('reports', 'zip');
@@ -1343,11 +1430,34 @@ async function runExportKeep() {
   errEl?.classList.add('hidden');
   $('#exportDialogActions')?.classList.add('hidden');
   try {
-    const files = await generateExportFiles();
+    const { files, errors } = await generateExportFiles();
+
+    if (!files.length) {
+      // Total failure — restore actions so the user can retry or deselect failing formats
+      if (errEl) {
+        const detail = errors.map(e => `${e.format.toUpperCase()}: ${e.message}`).join('; ');
+        errEl.textContent = `Export failed — ${detail || 'no files could be generated'}`;
+        errEl.classList.remove('hidden');
+      }
+      $('#exportDialogActions')?.classList.remove('hidden');
+      $('#exportProgress')?.classList.add('hidden');
+      toast('Export failed — retry, or try CSV only');
+      return;
+    }
+
+    // Partial success — surface which formats failed but still deliver the rest
+    if (errors.length) {
+      const detail = errors.map(e => `${e.format.toUpperCase()}: ${e.message}`).join('; ');
+      if (errEl) {
+        errEl.textContent = `Some formats failed — ${detail}. The other files are ready below.`;
+        errEl.classList.remove('hidden');
+      }
+    }
+
     await packageOrDownload(files);
     setExportProgress(100, 'Export ready. Use the links below if a download was blocked.');
     $('#exportDoneActions')?.classList.remove('hidden');
-    toast('Export prepared — check your downloads');
+    toast(errors.length ? 'Partial export ready' : 'Export prepared — check your downloads');
   } catch (err) {
     if (errEl) {
       errEl.textContent = err.message || String(err);
@@ -1413,30 +1523,45 @@ async function confirmArchiveAfterExport() {
   $('#exportArchiveConfirmActions')?.classList.add('hidden');
   exportSession.archiving = true;
 
+  let phase = 'export';
   try {
-    // 1) Generate files first — never delete on failed export
-    const files = await generateExportFiles();
+    // ── Phase 1: Export — must fully succeed before we delete anything ──
+    const { files, errors } = await generateExportFiles();
+    if (errors.length || files.length !== exportSession.formats.length) {
+      const detail = errors.map(e => `${e.format.toUpperCase()}: ${e.message}`).join('; ')
+        || 'one or more formats could not be generated';
+      throw new Error(`Export incomplete — ${detail}. Records were NOT deleted.`);
+    }
+    if (!files.length) {
+      throw new Error('Export produced no files. Records were NOT deleted.');
+    }
     await packageOrDownload(files);
-    setExportProgress(100, 'Files ready. Permanently deleting records on server…');
+    setExportProgress(100, 'Files ready. Sending delete request to server…');
 
-    // 2) Permanent delete on server (requires permanent: true)
+    // ── Phase 2: Permanent delete — longer timeout for bulk operations ──
+    phase = 'delete';
     const ids = toDelete.map(r => r.id);
     let result;
     try {
       result = await api('/records/archive', {
         method: 'POST',
+        timeout: 60000,
         body: JSON.stringify({ ids, permanent: true })
       });
     } catch (authErr) {
       if (authErr && authErr.status === 401) {
         throw new Error('Sign in as staff is required before permanently deleting records.');
       }
+      if (authErr && authErr.status === 404) {
+        throw new Error('Server does not expose /records/archive — the Worker route is missing.');
+      }
       throw authErr;
     }
 
     const count = result.deletedCount ?? result.archivedCount ?? 0;
+    const warned = result && result.warning ? ' ' + result.warning : '';
     setExportProgress(100, `Permanently deleted ${count} record${count === 1 ? '' : 's'}.`);
-    toast(`Exported and permanently deleted ${count} record${count === 1 ? '' : 's'}`);
+    toast(`Exported and permanently deleted ${count} record${count === 1 ? '' : 's'}${warned}`);
 
     // Drop deleted ids from local state and refresh
     const gone = new Set(ids);
@@ -1448,13 +1573,16 @@ async function confirmArchiveAfterExport() {
 
     $('#exportDoneActions')?.classList.remove('hidden');
   } catch (err) {
+    const message = err && err.message ? err.message : String(err);
     if (errEl) {
-      errEl.textContent = (err.message || String(err)) + ' — records were NOT deleted.';
+      errEl.textContent = (phase === 'export' ? 'Export failed: ' : 'Delete failed: ') + message;
       errEl.classList.remove('hidden');
     }
     $('#exportDialogActions')?.classList.remove('hidden');
     $('#exportProgress')?.classList.add('hidden');
-    toast('Delete aborted because export or server request failed');
+    toast(phase === 'export'
+      ? 'Export failed — nothing was deleted'
+      : 'Delete failed — refresh records to verify');
   } finally {
     exportSession.archiving = false;
   }
@@ -2596,3 +2724,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Start session + dashboard load after script initialization
 checkSession();
+
+// Defer library preloading so it doesn't compete with first paint / auth.
+setTimeout(() => { preloadExportLibs().catch(() => {}); }, 2000);
