@@ -1493,7 +1493,7 @@ async function runExportArchive() {
 }
 
 /* ============================================================
-   DELETE — endpoint shapes tried in order, with verification
+   DELETE — bulk endpoints first, per-record fallback, verification
    ============================================================ */
 const DELETE_ATTEMPTS = [
   { label: 'POST /records/archive {ids, permanent:true}',       path: '/records/archive',          method: 'POST',   build: (ids) => ({ ids, permanent: true }) },
@@ -1505,8 +1505,55 @@ const DELETE_ATTEMPTS = [
   { label: 'POST /admin/records/purge {ids}',                   path: '/admin/records/purge',      method: 'POST',   build: (ids) => ({ ids }) }
 ];
 
+async function isStaffSession() {
+  try {
+    const r = await api('/me');
+    return !!(r && r.user);
+  } catch {
+    return false;
+  }
+}
+
+function showDeleteSignInPrompt(errEl) {
+  if (!errEl) return;
+  errEl.innerHTML =
+    'Permanent delete requires a staff sign-in. ' +
+    '<a href="#" id="exportSignInLink" style="color:inherit;text-decoration:underline">Sign in as staff</a> ' +
+    'and try again, or use "Download and Keep Records" to export only.';
+  errEl.classList.remove('hidden');
+  $('#exportSignInLink')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    closeExportDialog();
+    showLogin();
+  });
+}
+
+async function perRecordDelete(ids) {
+  // Fallback for deployments where bulk endpoints require auth but per-record DELETE is open.
+  // (This is a security gap on the Worker — see note at the bottom.)
+  console.log('[NextGen delete] bulk endpoints refused auth — falling back to per-record DELETE ×', ids.length);
+  let deleted = 0;
+  const failures = [];
+  for (const id of ids) {
+    try {
+      await api('/records/' + encodeURIComponent(id), { method: 'DELETE', timeout: 30000 });
+      deleted++;
+      console.log('[NextGen delete] per-record deleted:', id);
+    } catch (err) {
+      failures.push({ id, status: err.status, message: err.message });
+      console.warn('[NextGen delete] per-record failed:', id, err.status, err.message);
+    }
+  }
+  return {
+    result: { deletedCount: deleted, permanent: true, perRecord: true, failures },
+    attempt: { label: `DELETE /records/{id} × ${ids.length}` }
+  };
+}
+
 async function tryDeleteOnServer(ids) {
   let lastErr = null;
+  let sawAuthError = false;
+
   for (const a of DELETE_ATTEMPTS) {
     try {
       console.log('[NextGen delete] trying:', a.label);
@@ -1521,10 +1568,15 @@ async function tryDeleteOnServer(ids) {
       const status = err && err.status;
       console.warn('[NextGen delete] failed:', a.label, '→', status || '(no status)', err.message);
       lastErr = err;
-      if (status === 401 || status === 403) throw err;
+      if (status === 401 || status === 403) { sawAuthError = true; continue; }
       if (status === 404 || status === 405 || status === 400 || status === 422) continue;
-      throw err;
+      throw err; // 500 / timeout — don't keep hammering
     }
+  }
+
+  if (sawAuthError) {
+    // Bulk routes are auth-gated. Try per-record DELETE before giving up.
+    return await perRecordDelete(ids);
   }
   throw lastErr || new Error('No delete endpoint responded');
 }
@@ -1551,12 +1603,14 @@ async function confirmArchiveAfterExport() {
     await packageOrDownload(files);
     setExportProgress(100, 'Files ready. Sending delete request to server…');
 
-    /* ── Phase 2: Delete ── */
+    /* ── Phase 2: Delete (bulk first, per-record fallback) ── */
     phase = 'delete';
     const ids = toDelete.map(r => r.id);
     const { result, attempt } = await tryDeleteOnServer(ids);
 
     const count = (result && (result.deletedCount ?? result.archivedCount ?? result.deleted)) ?? 0;
+    const partial = result && Array.isArray(result.failures) && result.failures.length
+      ? ` (${result.failures.length} failed)` : '';
     console.log('[NextGen delete] server reported count:', count, 'via', attempt.label);
 
     /* ── Phase 3: Verify ── */
@@ -1591,8 +1645,8 @@ async function confirmArchiveAfterExport() {
     }
     if (stillActive.length > 0) {
       throw new Error(
-        `Server reported ${count} deleted record(s) but ${stillActive.length} of the ${ids.length} requested record(s) ` +
-        `are still in the active view. The Worker's ${attempt.label} is not actually deleting rows.`
+        `${stillActive.length} of ${ids.length} requested record(s) are still in the active view. ` +
+        `${attempt.label} did not fully remove them${partial}.`
       );
     }
 
@@ -1607,20 +1661,24 @@ async function confirmArchiveAfterExport() {
     $('#exportDoneActions')?.classList.remove('hidden');
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
-    if (errEl) {
+
+    if (phase === 'delete' && (err.status === 401 || err.status === 403)) {
+      showDeleteSignInPrompt(errEl);
+      toast('Sign in as staff to permanently delete records');
+    } else if (errEl) {
       errEl.textContent =
         (phase === 'export'   ? 'Export failed: '
        : phase === 'delete'   ? 'Delete failed: '
        :                        'Verification failed: ') + message;
       errEl.classList.remove('hidden');
+      toast(
+        phase === 'export' ? 'Export failed — nothing was deleted'
+      : phase === 'delete' ? 'Delete request was rejected — see details'
+      :                      'Server accepted the delete but records are still there — see details'
+      );
     }
     $('#exportDialogActions')?.classList.remove('hidden');
     $('#exportProgress')?.classList.add('hidden');
-    toast(
-      phase === 'export' ? 'Export failed — nothing was deleted'
-    : phase === 'delete' ? 'Delete request was rejected — see details'
-    :                      'Server accepted the delete but records are still there — see details'
-    );
     console.error('[NextGen delete] final error:', phase, err);
   } finally {
     exportSession.archiving = false;
