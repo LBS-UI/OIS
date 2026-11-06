@@ -3180,6 +3180,51 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
 .sheet .actions button.danger{color:#cf222e}
 .sheet .actions button:hover{text-decoration:underline}
 @media(max-width:700px){.sheet-wrap{max-height:calc(100vh - 220px)}}
+
+/* ------------------------------------------------------------
+   Dark mode: spreadsheet records table (.sheet)
+   ------------------------------------------------------------ */
+[data-theme="dark"] .sheet-wrap{
+  background:#0f1e2d;
+  border-color:#1c3044;
+}
+[data-theme="dark"] .sheet th{
+  background:#132436;
+  color:#8a9fb2;
+  border-color:#1c3044;
+}
+[data-theme="dark"] .sheet td{
+  background:#0f1e2d;
+  color:#c5d3e0;
+  border-color:#1c3044;
+}
+[data-theme="dark"] .sheet tbody tr:nth-child(even) td{
+  background:#132436;
+}
+[data-theme="dark"] .sheet tbody tr:hover td{
+  background:#152a3e;
+}
+[data-theme="dark"] .sheet tbody tr.selected td{
+  background:#153050;
+}
+[data-theme="dark"] .sheet .row-num{
+  color:#6e8398;
+}
+[data-theme="dark"] .sheet .cell-edit:hover{
+  outline-color:#5ea5f0;
+}
+[data-theme="dark"] .sheet input.cell-input{
+  background:#0a1725;
+  color:#e2ecf5;
+  border-color:#5ea5f0;
+  box-shadow:0 0 0 2px rgba(94,165,240,.2);
+}
+[data-theme="dark"] .sheet .actions button{
+  color:#7bb6f5;
+}
+[data-theme="dark"] .sheet .actions button.danger{
+  color:#f28b82;
+}
 </style>
 </head>
 <body>
