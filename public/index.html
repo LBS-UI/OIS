@@ -538,8 +538,10 @@ body:has(#appView.hidden) .main-area{
 }
 .landing-header .btn.primary:hover{background:linear-gradient(180deg,#1d4a72,#12314f)}
 
+.landing-header .theme-toggle{margin-left:auto}
+
 /* ------------------------------------------------------------
-   10. LANDING — HERO
+   10. LANDING — HERO (legacy — kept for compatibility)
    ------------------------------------------------------------ */
 .hero{
   display:grid;
@@ -776,7 +778,7 @@ body:has(#appView.hidden) .main-area{
 }
 
 /* ------------------------------------------------------------
-   11. STATS BAND
+   11. STATS BAND (legacy)
    ------------------------------------------------------------ */
 .stats-band{
   display:grid;
@@ -811,7 +813,7 @@ body:has(#appView.hidden) .main-area{
 }
 
 /* ------------------------------------------------------------
-   12. LANDING — SECTIONS
+   12. LANDING — SECTIONS (legacy)
    ------------------------------------------------------------ */
 .landing-section{padding:clamp(46px,6.5vw,84px) 0;position:relative}
 
@@ -1365,6 +1367,20 @@ body:has(#appView.hidden) .main-area{
 }
 
 /* ------------------------------------------------------------
+   13b. PORTAL-ONLY LANDING — minimal two-option home
+   ------------------------------------------------------------ */
+.portal-only-layout{
+  padding:clamp(40px, 8vh, 100px) 0;
+}
+.login-view-wrap{
+  max-width: 420px;
+  margin: 0 auto;
+}
+.login-back-btn{
+  margin-bottom: 16px;
+}
+
+/* ------------------------------------------------------------
    14. STUDENT MODE — hide teacher UI, keep only Registration
    ------------------------------------------------------------ */
 body.student-mode .sidebar{display:none !important}
@@ -1376,16 +1392,13 @@ body.student-mode #logoutBtn{display:none !important}
 body.student-mode #menuBtn{display:none !important}
 body.student-mode .secure-note{display:none}
 
-/* Hide every page except Registration while in student mode */
 body.student-mode #page-home,
 body.student-mode #page-records,
 body.student-mode #page-scores,
 body.student-mode #page-scan{display:none !important}
 
-/* Show the Return-to-Home button only in student mode */
 body.student-mode #returnToHomeBtn{display:inline-flex !important}
 
-/* Neutralise the "danger zone" panel if it ever becomes visible */
 body.student-mode #dangerZonePanel{display:none !important}
 
 @media (max-width:800px){
@@ -1902,7 +1915,6 @@ h3{font:700 15px Manrope;margin-bottom:5px;color:var(--navy-900)}
 @media (max-width:980px){
   .landing-nav{display:none}
   .landing-header{gap:12px}
-  .theme-toggle{margin-left:auto}
   .landing-header .btn.primary{margin-left:0}
 
   .hero{
@@ -2541,7 +2553,7 @@ body.intro-lock{overflow:hidden;height:100vh}
 }
 
 /* ------------------------------------------------------------
-   23. ABOUT / INTRO SECTION
+   23. ABOUT / INTRO SECTION (legacy)
    ------------------------------------------------------------ */
 .intro-section{
   display:grid;
@@ -3239,7 +3251,7 @@ body.intro-lock{overflow:hidden;height:100vh}
   .btn,.notification-wrapper,.theme-toggle,
   .connection,.avatar,.intro-section,.stats-band,
   .landing-section,.cta-banner,.staff-section,
-  .portal-select-section,
+  .portal-only-layout,
   .record-modal-actions,.qr-modal-actions{display:none!important}
   .qr-modal[open],.record-modal[open]{
     position:static;
@@ -3468,7 +3480,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item, .porta
       </div>
     </header>
 
-    <!-- ==================== PUBLIC LANDING / HOME ==================== -->
+    <!-- ==================== LANDING — TWO PORTALS ONLY ==================== -->
     <section id="loginView" class="landing hidden">
 
       <header class="landing-header">
@@ -3476,87 +3488,18 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item, .porta
           <span class="brand-mark"><img src="/nextgen.jpg" alt="NextGen Smart Classroom logo"></span>
           <span class="landing-brand-text"><b>NEXTGEN</b><small>SMART CLASSROOM</small></span>
         </a>
-        <nav class="landing-nav" aria-label="Landing navigation">
-          <a href="#portals">Portals</a>
-          <a href="#categories">Registration</a>
-          <a href="#features">Features</a>
-          <a href="#how-it-works">How it works</a>
-        </nav>
         <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode" title="Switch to dark mode">
           <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
           <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
         </button>
-        <a class="btn primary small" href="#staffAccess">Staff portal</a>
       </header>
 
-      <div class="hero">
-        <div class="hero-copy">
-          <p class="pill"><span class="status-dot"></span> SMART LEARNING, SIMPLIFIED</p>
-          <h1 class="hero-title">Smarter Registration.<br><em>Better Learning.</em></h1>
-          <p class="hero-text">A streamlined classroom platform for participant registration, secure QR identification, and organized learning records.</p>
-          <div class="hero-actions">
-            <a class="btn primary" href="#portals">Get started <span aria-hidden="true">→</span></a>
-            <a class="btn secondary" href="#staffAccess">Staff portal</a>
-          </div>
-          <ul class="hero-points">
-            <li>Centralized records</li>
-            <li>QR identification</li>
-            <li>Export-ready reports</li>
-          </ul>
-        </div>
-
-        <div class="hero-visual" aria-hidden="true">
-          <div class="mock-window">
-            <div class="mock-window-bar">
-              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-              <span class="mock-window-title">NextGen · Records</span>
-            </div>
-            <div class="mock-window-body">
-              <div class="mock-record">
-                <span class="mock-avatar">JS</span>
-                <div class="mock-record-lines"><span class="l1"></span><span class="l2"></span></div>
-                <span class="mock-badge">Student</span>
-              </div>
-
-              <div class="mock-qr">
-                <svg viewBox="0 0 72 72" role="presentation">
-                  <rect width="72" height="72" rx="6" fill="#ffffff"/>
-                  <g fill="#0b2b4c">
-                    <path d="M8 8h16v16H8z"/><path d="M11 11h10v10h-10z" fill="#ffffff"/><path d="M14 14h4v4h-4z"/>
-                    <path d="M48 8h16v16H48z"/><path d="M51 11h10v10h-10z" fill="#ffffff"/><path d="M54 14h4v4h-4z"/>
-                    <path d="M8 48h16v16H8z"/><path d="M11 51h10v10h-10z" fill="#ffffff"/><path d="M14 54h4v4h-4z"/>
-                    <rect x="30" y="8" width="4" height="4"/><rect x="38" y="8" width="4" height="4"/>
-                    <rect x="30" y="16" width="4" height="4"/><rect x="34" y="12" width="4" height="4"/>
-                    <rect x="38" y="20" width="4" height="4"/><rect x="30" y="30" width="4" height="4"/>
-                    <rect x="38" y="30" width="4" height="4"/><rect x="46" y="30" width="4" height="4"/>
-                    <rect x="54" y="30" width="4" height="4"/><rect x="30" y="38" width="4" height="4"/>
-                    <rect x="42" y="38" width="4" height="4"/><rect x="54" y="38" width="4" height="4"/>
-                    <rect x="30" y="46" width="4" height="4"/><rect x="38" y="46" width="4" height="4"/>
-                    <rect x="46" y="46" width="4" height="4"/><rect x="54" y="46" width="4" height="4"/>
-                    <rect x="46" y="54" width="4" height="4"/><rect x="54" y="54" width="4" height="4"/>
-                    <rect x="34" y="54" width="4" height="4"/>
-                  </g>
-                </svg>
-              </div>
-
-              <div class="mock-record">
-                <span class="mock-avatar mock-avatar--alt">AR</span>
-                <div class="mock-record-lines"><span class="l1"></span><span class="l2"></span></div>
-                <span class="mock-badge mock-badge--blue">Visitor</span>
-              </div>
-            </div>
-          </div>
-          <div class="mock-float mock-float--a"><span class="mock-check">✓</span> Record saved</div>
-          <div class="mock-float mock-float--b">▦ QR token issued</div>
-        </div>
-      </div>
-
-      <!-- ===== PORTAL SELECTION — STUDENT vs TEACHER ===== -->
-      <section class="portal-select-section" id="portals" aria-labelledby="portalTitle">
+      <!-- Portal selection — the two options -->
+      <section id="portalSelectView" class="portal-only-layout" aria-labelledby="portalTitle">
         <div class="section-head portal-select-head">
-          <p class="section-kicker">GET STARTED</p>
-          <h2 id="portalTitle">Who are you?</h2>
-          <p class="muted">Choose the portal that matches your role. Students go directly to registration; teachers sign in to the workspace.</p>
+          <p class="section-kicker">WELCOME</p>
+          <h2 id="portalTitle">Choose your portal</h2>
+          <p class="muted">Select how you want to continue.</p>
         </div>
 
         <div class="portal-grid">
@@ -3575,223 +3518,30 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item, .porta
           </button>
         </div>
       </section>
-      <!-- ===== END PORTAL SELECTION ===== -->
 
-      <section class="intro-section" aria-labelledby="aboutTitle">
-        <div class="intro-lead">
-          <p class="section-kicker">WELCOME TO NEXTGEN</p>
-          <h2 id="aboutTitle">One platform for the whole classroom office</h2>
-          <p>NextGen Smart Classroom brings participant intake, assessment scores, and QR identification into a single workspace — replacing scattered paper forms with one consistent, searchable record for every student, employee, client, and visitor.</p>
-          <p>Staff sign in once to register participants, record pre-test and post-test results, issue printable QR tokens, and export reports whenever the administration needs them.</p>
-        </div>
-
-        <div class="intro-pillars">
-          <article class="intro-pillar">
-            <span class="num">01</span>
-            <div>
-              <h3>Built for school workflows</h3>
-              <p>Categories, fields, and scores mirror the existing offline process, so nothing is lost in the move to digital.</p>
-            </div>
-          </article>
-          <article class="intro-pillar">
-            <span class="num">02</span>
-            <div>
-              <h3>Private by default</h3>
-              <p>QR codes carry only an opaque token. Participant details always require an authorized staff session.</p>
-            </div>
-          </article>
-          <article class="intro-pillar">
-            <span class="num">03</span>
-            <div>
-              <h3>Ready to scale</h3>
-              <p>Designed to connect to a cloud database when configured, with export-ready CSV, Excel, and PDF reports.</p>
-            </div>
-          </article>
+      <!-- Staff login — shown only after clicking Teacher Portal -->
+      <section id="staffAccess" class="portal-only-layout hidden" aria-labelledby="staffTitle">
+        <div class="login-view-wrap">
+          <button type="button" id="backToPortals" class="btn secondary small login-back-btn">← Back to portals</button>
+          <form id="loginForm" class="panel login-card">
+            <div class="section-kicker">STAFF ACCESS</div>
+            <h3 id="staffTitle">Sign in</h3>
+            <p class="muted">Use your authorized workspace account.</p>
+            <label>Username
+              <input name="username" autocomplete="username" required placeholder="Staff username">
+            </label>
+            <label>Password
+              <input name="password" type="password" autocomplete="current-password" required placeholder="Password">
+            </label>
+            <button class="btn primary full" type="submit">Sign in <span aria-hidden="true">→</span></button>
+            <p id="loginMessage" class="form-message" role="status"></p>
+            <p class="microcopy">Cloud access must be configured by the system administrator before real records can be stored.</p>
+          </form>
         </div>
       </section>
-
-      <section class="stats-band" aria-label="Platform at a glance">
-        <div class="band-stat"><strong>3</strong><span>Registration categories</span></div>
-        <div class="band-stat"><strong>QR</strong><span>Secure identification</span></div>
-        <div class="band-stat"><strong>CSV</strong><span>Export-ready reports</span></div>
-        <div class="band-stat"><strong>1</strong><span>Unified workflow</span></div>
-      </section>
-
-      <section class="landing-section" id="categories" aria-labelledby="categoriesTitle">
-        <div class="section-head">
-          <p class="section-kicker">REGISTRATION</p>
-          <h2 id="categoriesTitle">Registration categories</h2>
-          <p class="muted">Registrations are completed inside the appropriate portal. Students complete their own; staff can register any participant from the teacher workspace.</p>
-        </div>
-
-        <div class="category-grid">
-          <article class="category-card">
-            <span class="category-icon category-icon--blue" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10 12 5 2 10l10 5 10-5Z"/><path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5"/></svg>
-            </span>
-            <h3>Student Registration</h3>
-            <p>Register students and manage their classroom information and assessment records.</p>
-            <a class="category-link" href="#portals" data-category="student">Open portal <span aria-hidden="true">→</span></a>
-          </article>
-
-          <article class="category-card">
-            <span class="category-icon category-icon--teal" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2.5"/><path d="M9 7V5.5A2.5 2.5 0 0 1 11.5 3h1A2.5 2.5 0 0 1 15 5.5V7"/><path d="M3 12h18"/></svg>
-            </span>
-            <h3>Employee / Client Registration</h3>
-            <p>Register employees or clients and maintain their organizational information and assessment records.</p>
-            <a class="category-link" href="#portals" data-category="employee">Open portal <span aria-hidden="true">→</span></a>
-          </article>
-
-          <article class="category-card">
-            <span class="category-icon category-icon--violet" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5" width="19" height="14" rx="2.5"/><circle cx="8.5" cy="11" r="2.2"/><path d="M5.5 16.2c.6-1.5 1.7-2.2 3-2.2s2.4.7 3 2.2"/><path d="M14.5 10h4M14.5 13.5h4"/></svg>
-            </span>
-            <h3>Visitor Registration</h3>
-            <p>Register visitors and organize their visit-related information.</p>
-            <a class="category-link" href="#portals" data-category="visitor">Open portal <span aria-hidden="true">→</span></a>
-          </article>
-        </div>
-      </section>
-
-      <section class="landing-section" id="features" aria-labelledby="featuresTitle">
-        <div class="section-head">
-          <p class="section-kicker">PLATFORM CAPABILITIES</p>
-          <h2 id="featuresTitle">Everything the classroom office needs</h2>
-          <p class="muted">One consistent workflow for intake, identification, and reporting.</p>
-        </div>
-
-        <div class="feature-grid">
-          <article class="feature-card">
-            <span class="feature-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM20 14h1M20 20h1M14 20h1"/></svg>
-            </span>
-            <h3>QR-Based Identification</h3>
-            <p>Each saved record receives an opaque token that can be printed as a QR code for quick lookup.</p>
-          </article>
-
-          <article class="feature-card">
-            <span class="feature-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v18H6.5A2.5 2.5 0 0 1 4 18.5z"/><path d="M8 7h7M8 11h7M8 15h4"/></svg>
-            </span>
-            <h3>Organized Participant Records</h3>
-            <p>Search, filter, and review student, employee, and visitor registrations from one list.</p>
-          </article>
-
-          <article class="feature-card">
-            <span class="feature-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
-            </span>
-            <h3>Assessment Score Management</h3>
-            <p>Keep pre-test and post-test results alongside each participant’s profile.</p>
-          </article>
-
-          <article class="feature-card">
-            <span class="feature-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4 17v2.5A1.5 1.5 0 0 0 5.5 21h13a1.5 1.5 0 0 0 1.5-1.5V17"/></svg>
-            </span>
-            <h3>Convenient Digital Registration</h3>
-            <p>Replace paper forms with a single, consistent intake workflow for every category.</p>
-          </article>
-        </div>
-      </section>
-
-      <section class="landing-section" id="how-it-works" aria-labelledby="howTitle">
-        <div class="section-head">
-          <p class="section-kicker">HOW IT WORKS</p>
-          <h2 id="howTitle">Three simple steps</h2>
-          <p class="muted">No technical knowledge required — for students, teachers, staff, and visitors alike.</p>
-        </div>
-
-        <div class="steps-wrap">
-          <ol class="steps">
-            <li class="step">
-              <span class="step-num">1</span>
-              <h3>Choose your portal</h3>
-              <p>Students go to the Student Portal to register. Teachers go to the Teacher Portal to sign in.</p>
-            </li>
-            <li class="step">
-              <span class="step-num">2</span>
-              <h3>Complete the form</h3>
-              <p>Students fill in their own registration. Staff register participants and record assessment scores.</p>
-            </li>
-            <li class="step">
-              <span class="step-num">3</span>
-              <h3>Receive the QR code</h3>
-              <p>A unique token is issued and can be printed or displayed for attendance.</p>
-            </li>
-          </ol>
-        </div>
-      </section>
-
-      <section class="cta-banner" aria-labelledby="ctaTitle">
-        <div>
-          <h2 id="ctaTitle">Ready to streamline your classroom records?</h2>
-          <p>Staff can sign in to the workspace to register participants, record assessment scores, and issue QR codes.</p>
-        </div>
-        <a class="btn" href="#staffAccess">Open staff portal <span aria-hidden="true">→</span></a>
-      </section>
-
-      <section class="landing-section staff-section" id="staffAccess" aria-labelledby="staffTitle">
-        <div class="staff-copy">
-          <p class="section-kicker">TEACHER PORTAL · STAFF ACCESS</p>
-          <h2 id="staffTitle">Sign in to the workspace</h2>
-          <p class="muted">Registration, records, and reports for staff accounts. Participant details are not shown to students or on this page.</p>
-          <ul class="check-list">
-            <li>Centralized participant records</li>
-            <li>QR identification and lookup</li>
-            <li>Assessment scores and feedback</li>
-            <li>Export-ready CSV, Excel, and PDF reports</li>
-          </ul>
-        </div>
-
-        <form id="loginForm" class="panel login-card">
-          <div class="section-kicker">STAFF ACCESS</div>
-          <h3>Sign in</h3>
-          <p class="muted">Use your authorized workspace account.</p>
-          <label>Username
-            <input name="username" autocomplete="username" required placeholder="Staff username">
-          </label>
-          <label>Password
-            <input name="password" type="password" autocomplete="current-password" required placeholder="Password">
-          </label>
-          <button class="btn primary full" type="submit">Sign in <span aria-hidden="true">→</span></button>
-          <p id="loginMessage" class="form-message" role="status"></p>
-          <p class="microcopy">Cloud access must be configured by the system administrator before real records can be stored.</p>
-        </form>
-      </section>
-
-      <footer class="landing-footer">
-        <div class="landing-footer-top">
-          <div class="landing-footer-brand">
-            <span class="brand-mark"><img src="/nextgen.jpg" alt="NextGen Smart Classroom logo"></span>
-            <div>
-              <b>NEXTGEN SMART CLASSROOM</b>
-              <p>A streamlined classroom platform for participant registration, secure QR identification, and organized learning records.</p>
-            </div>
-          </div>
-          <nav class="landing-footer-nav" aria-label="Footer navigation">
-            <div>
-              <h4>Platform</h4>
-              <a href="#portals">Portals</a>
-              <a href="#categories">Registration</a>
-              <a href="#features">Features</a>
-            </div>
-            <div>
-              <h4>Access</h4>
-              <a href="#portals">Student Portal</a>
-              <a href="#staffAccess">Teacher Portal</a>
-            </div>
-          </nav>
-        </div>
-        <div class="landing-footer-bottom">
-          <span>© NextGen Smart Classroom. All rights reserved.</span>
-          <span>Powered by NextGen Smart Classroom</span>
-        </div>
-      </footer>
 
     </section>
-    <!-- ================== END PUBLIC LANDING ================== -->
+    <!-- ================== END LANDING ================== -->
 
     <!-- ==================== AUTHENTICATED APP ==================== -->
     <section id="appView">
@@ -4399,40 +4149,54 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item, .porta
 })();
 </script>
 
-<!-- Portal switching behaviour (Student vs Teacher) -->
+<!-- Portal switching — two views: portal selection and staff login -->
 <script>
 (function(){
-  function landing(){
-    return document.getElementById('loginView');
-  }
-  function app(){
-    return document.getElementById('appView');
-  }
+  function landing(){ return document.getElementById('loginView'); }
+  function app(){ return document.getElementById('appView'); }
+  function portalSelect(){ return document.getElementById('portalSelectView'); }
+  function staffAccess(){ return document.getElementById('staffAccess'); }
+
   function showLanding(){
     document.body.classList.remove('student-mode');
-    const l = landing(), a = app();
-    if(l) l.classList.remove('hidden');
-    if(a) a.classList.add('hidden');
+    landing()?.classList.remove('hidden');
+    app()?.classList.add('hidden');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
+
   function showAppView(){
-    const l = landing(), a = app();
-    if(l) l.classList.add('hidden');
-    if(a) a.classList.remove('hidden');
+    landing()?.classList.add('hidden');
+    app()?.classList.remove('hidden');
   }
+
+  function showPortalSelection(){
+    portalSelect()?.classList.remove('hidden');
+    staffAccess()?.classList.add('hidden');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function showLoginForm(){
+    portalSelect()?.classList.add('hidden');
+    staffAccess()?.classList.remove('hidden');
+    setTimeout(function(){
+      var u = document.querySelector('#loginForm input[name="username"]');
+      if (u) u.focus();
+    }, 150);
+  }
+
   function enterStudentMode(){
     document.body.classList.add('student-mode');
-    // Use app.js global helpers if they are available.
     try { if (typeof showApp === 'function') showApp(); } catch(e){ /* ignore */ }
     try { if (typeof resetForm === 'function') resetForm(); } catch(e){ /* ignore */ }
     try { if (typeof navigate === 'function') navigate('register'); } catch(e){ /* ignore */ }
     showAppView();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
+
   function enterTeacherMode(){
     document.body.classList.remove('student-mode');
-    const logoutBtn = document.getElementById('logoutBtn');
-    const isAuthed = logoutBtn && !logoutBtn.classList.contains('hidden');
+    var logoutBtn = document.getElementById('logoutBtn');
+    var isAuthed = logoutBtn && !logoutBtn.classList.contains('hidden');
     if (isAuthed) {
       try { if (typeof showApp === 'function') showApp(); } catch(e){ /* ignore */ }
       try { if (typeof navigate === 'function') navigate('home'); } catch(e){ /* ignore */ }
@@ -4440,12 +4204,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item, .porta
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } else {
       showLanding();
-      const target = document.getElementById('staffAccess');
-      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      setTimeout(function(){
-        const u = document.querySelector('#loginForm input[name="username"]');
-        if (u) u.focus();
-      }, 500);
+      showLoginForm();
     }
   }
 
@@ -4456,8 +4215,21 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item, .porta
     document.querySelectorAll('[data-portal="teacher"]').forEach(function(btn){
       btn.addEventListener('click', enterTeacherMode);
     });
-    const ret = document.getElementById('returnToHomeBtn');
-    if (ret) ret.addEventListener('click', showLanding);
+
+    var backBtn = document.getElementById('backToPortals');
+    if (backBtn) backBtn.addEventListener('click', showPortalSelection);
+
+    var ret = document.getElementById('returnToHomeBtn');
+    if (ret) ret.addEventListener('click', function(){
+      showLanding();
+      showPortalSelection();
+    });
+
+    var logout = document.getElementById('logoutBtn');
+    if (logout) logout.addEventListener('click', function(){
+      // Give app.js's logout handler time to finish, then reset landing view
+      setTimeout(function(){ showPortalSelection(); }, 200);
+    });
   }
 
   if (document.readyState === 'loading') {
@@ -4466,20 +4238,19 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item, .porta
     bind();
   }
 
-  // Ensure unauthenticated visitors see the landing/portal page.
-  // app.js's checkSession() currently auto-shows the app; this poll waits for it to settle
-  // and then reveals the landing page if the user is not signed in.
-  let waited = 0;
-  const interval = setInterval(function(){
+  // Ensure unauthenticated visitors see the portal selection.
+  var waited = 0;
+  var interval = setInterval(function(){
     waited += 100;
-    const connectionText = (document.getElementById('connectionText')?.textContent || '').trim();
-    const logoutBtn = document.getElementById('logoutBtn');
-    const settled = connectionText && connectionText !== 'Connecting…';
+    var connectionText = (document.getElementById('connectionText')?.textContent || '').trim();
+    var logoutBtn = document.getElementById('logoutBtn');
+    var settled = connectionText && connectionText !== 'Connecting…';
     if (settled || waited > 3000) {
       clearInterval(interval);
-      const isAuthed = logoutBtn && !logoutBtn.classList.contains('hidden');
+      var isAuthed = logoutBtn && !logoutBtn.classList.contains('hidden');
       if (!isAuthed && !document.body.classList.contains('student-mode')) {
         showLanding();
+        showPortalSelection();
       }
     }
   }, 100);
