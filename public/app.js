@@ -203,31 +203,53 @@ function showLogin() {
   loginView?.classList.remove('hidden');
   appView?.classList.add('hidden');
   $('#logoutBtn')?.classList.add('hidden');
-  onLoggedOut();
+  try { onLoggedOut(); } catch (e) { console.warn('[NextGen] onLoggedOut:', e); }
 }
 
 function showApp() {
   loginView?.classList.add('hidden');
   appView?.classList.remove('hidden');
   $('#logoutBtn')?.classList.remove('hidden');
-  onAuthenticated();
+  try { onAuthenticated(); } catch (e) { console.warn('[NextGen] onAuthenticated:', e); }
 }
 
 async function checkSession() {
+  // Clear the HTML placeholder immediately so status never sticks on "Checking connection"
+  if (!navigator.onLine) {
+    setConnection(false, 'Offline');
+  } else {
+    setConnection(false, 'Connecting…');
+  }
+
   // Always show the app directly (no homepage / login wall)
   showApp();
-  navigate('home');
+  try { navigate('home'); } catch (e) { console.warn('[NextGen] navigate:', e); }
+
   try {
     await api('/me');
     state.apiReady = true;
     setConnection(true, 'Cloud connected');
   } catch (e) {
-    state.apiReady = true;
-    setConnection(true, 'Open registration');
-    const logout = $('#logoutBtn');
-    if (logout) logout.classList.add('hidden');
+    if (!navigator.onLine) {
+      state.apiReady = false;
+      setConnection(false, 'Offline');
+    } else if (e && (e.status === 401 || e.status === 403)) {
+      // Worker is up; user is simply not signed in
+      state.apiReady = true;
+      setConnection(true, 'Open registration');
+      const logout = $('#logoutBtn');
+      if (logout) logout.classList.add('hidden');
+    } else {
+      state.apiReady = false;
+      setConnection(false, 'API unavailable');
+    }
   }
-  await loadRecords();
+
+  try {
+    await loadRecords();
+  } catch (e) {
+    console.warn('[NextGen] loadRecords:', e);
+  }
 }
 
 function navigate(page) {
