@@ -328,11 +328,27 @@ export default {
     // ---------- Public records list (for overview) — active records only ----------
     if (path === '/api/records' && method === 'GET') {
       const includeArchived = url.searchParams.get('archived') === '1' || url.searchParams.get('include_archived') === '1';
-      const sql = includeArchived
-        ? 'SELECT * FROM records ORDER BY created_at DESC'
-        : 'SELECT * FROM records WHERE COALESCE(archived, 0) = 0 ORDER BY created_at DESC';
-      const { results = [] } = await env.DB.prepare(sql).all();
-      return json({ records: results.map(mapRecord) });
+      const onlyArchived = url.searchParams.get('archived') === 'only';
+      try {
+        let sql = 'SELECT * FROM records WHERE COALESCE(archived, 0) = 0 ORDER BY created_at DESC';
+        if (onlyArchived) sql = 'SELECT * FROM records WHERE archived = 1 ORDER BY archived_at DESC, created_at DESC';
+        else if (includeArchived) sql = 'SELECT * FROM records ORDER BY created_at DESC';
+        const { results = [] } = await env.DB.prepare(sql).all();
+        return json({ records: results.map(mapRecord) });
+      } catch (e) {
+        // Production D1 may not have the archived column yet — fall back safely
+        const msg = String(e && e.message ? e.message : e);
+        if (/no such column:\s*archived/i.test(msg) || /archived/i.test(msg)) {
+          const { results = [] } = await env.DB.prepare(
+            'SELECT * FROM records ORDER BY created_at DESC'
+          ).all();
+          return json({
+            records: results.map(mapRecord),
+            warning: 'Archive columns not migrated yet. Run worker/migrations/001_add_archived.sql on D1.',
+          });
+        }
+        return fail('Could not load records.', 500);
+      }
     }
 
     // ---------- Authenticated endpoints ----------
@@ -349,15 +365,15 @@ export default {
       return json({ ok: true, user: { username: user } });
     }
 
-    // Authenticated list (same filtering; auth already verified above)
-    if (path === '/api/records' && method === 'GET') {
-      const includeArchived = url.searchParams.get('archived') === '1' || url.searchParams.get('include_archived') === '1';
-      const onlyArchived = url.searchParams.get('archived') === 'only';
-      let sql = 'SELECT * FROM records WHERE COALESCE(archived, 0) = 0 ORDER BY created_at DESC';
-      if (onlyArchived) sql = 'SELECT * FROM records WHERE archived = 1 ORDER BY archived_at DESC, created_at DESC';
-      else if (includeArchived) sql = 'SELECT * FROM records ORDER BY created_at DESC';
-      const { results = [] } = await env.DB.prepare(sql).all();
-      return json({ records: results.map(mapRecord) });
+    // Optional in-app notification feed (empty until a real feed is implemented)
+    if (path === '/api/notifications' && method === 'GET') {
+      return json({ notifications: [], unreadCount: 0 });
+    }
+    if (path.match(/^\/api\/notifications\/[^/]+\/read$/) && method === 'POST') {
+      return json({ ok: true });
+    }
+    if (path === '/api/notifications/read-all' && method === 'POST') {
+      return json({ ok: true });
     }
 
     // ---------- Archive records (authenticated, reversible) ----------

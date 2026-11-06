@@ -1,5 +1,5 @@
 /* NextGen Smart Classroom — app shell service worker */
-const CACHE = 'ngsc-shell-v2';
+const CACHE = 'ngsc-shell-v3';
 const SHELL = [
   '/',
   '/index.html',
@@ -8,12 +8,23 @@ const SHELL = [
   '/qrcode.min.js',
   '/styles.css',
   '/nextgen.jpg',
-  '/sounds/Notification%20Sound.mp3'
+  '/manifest.json'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting())
+    caches.open(CACHE)
+      .then((cache) =>
+        // Cache shell files individually so one failure does not break install
+        Promise.all(
+          SHELL.map((url) =>
+            cache.add(url).catch((err) => {
+              console.warn('[SW] skip cache', url, err && err.message ? err.message : err);
+            })
+          )
+        )
+      )
+      .then(() => self.skipWaiting())
   );
 });
 
@@ -25,20 +36,34 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+function canCacheResponse(req, res) {
+  if (!res || !res.ok) return false;
+  // Cache API rejects partial responses (HTTP 206) — common for audio/video range requests
+  if (res.status === 206) return false;
+  if (res.type === 'opaque') return false;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return false;
+  // Avoid caching media that browsers often request with Range headers
+  if (/\.(mp3|mp4|wav|ogg|webm)$/i.test(url.pathname)) return false;
+  return true;
+}
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
 
-  // Never cache API calls
+  // Never intercept API calls
   if (url.pathname.startsWith('/api/')) return;
 
-  // Network-first for navigation, cache-first for static assets
+  // Network-first for navigation
   if (req.mode === 'navigate') {
     event.respondWith(
       fetch(req)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((cache) => cache.put('/', copy));
+          if (canCacheResponse(req, res)) {
+            const copy = res.clone();
+            caches.open(CACHE).then((cache) => cache.put('/', copy).catch(() => {}));
+          }
           return res;
         })
         .catch(() => caches.match('/') || caches.match('/index.html'))
@@ -46,14 +71,18 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Cache-first for same-origin static assets (except media)
   event.respondWith(
-    caches.match(req).then((cached) => cached || fetch(req).then((res) => {
-      if (res.ok && url.origin === self.location.origin) {
-        const copy = res.clone();
-        caches.open(CACHE).then((cache) => cache.put(req, copy));
-      }
-      return res;
-    }).catch(() => cached))
+    caches.match(req).then((cached) => {
+      if (cached) return cached;
+      return fetch(req).then((res) => {
+        if (canCacheResponse(req, res)) {
+          const copy = res.clone();
+          caches.open(CACHE).then((cache) => cache.put(req, copy).catch(() => {}));
+        }
+        return res;
+      }).catch(() => cached);
+    })
   );
 });
 
