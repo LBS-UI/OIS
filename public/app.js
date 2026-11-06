@@ -540,25 +540,36 @@ async function loadRecords(opts = {}) {
     else if (archView === 'all') qs = '?include_archived=1';
     // default: active only (server excludes archived)
     const result = await api('/records' + qs);
-    state.records = result.records || [];
+    state.records = Array.isArray(result.records) ? result.records : [];
     state.apiReady = true;
     state.hasLoadedOnce = true;
     state.recordsLastFetched = Date.now();
-    setConnection(true, 'Cloud connected');
+    // Keep prior auth-based label if already set to Open registration; otherwise show connected
+    const ct = $('#connectionText')?.textContent || '';
+    if (ct !== 'Open registration') setConnection(true, 'Cloud connected');
     populateSectionFilter();
     renderRecords();
-    renderHome();
+    renderHome(); // updates total / category counts (shows 0 when empty)
     updateRecordsUpdatedIndicator();
-    try { observeRecordsForLocalNotifs(state.records); } catch (_) {}
+    try { observeRecordsForLocalNotifs(state.records); } catch (err) {
+      console.warn('[NextGen] observeRecordsForLocalNotifs:', err);
+    }
   } catch (e) {
-    if (e.status === 401) { return; } // public visitors don't need records access
+    if (e.status === 401) {
+      // Session required for this filter view; still clear loading state and show zeros
+      state.records = state.records || [];
+      renderHome();
+      return;
+    }
     state.apiReady = false;
-    setConnection(false, 'API unavailable');
+    if (!navigator.onLine) setConnection(false, 'Offline');
+    else setConnection(false, 'API unavailable');
+    renderHome(); // keep counts consistent (previous data or empty)
     if (tableEl) {
       tableEl.innerHTML = `<div class="empty-state">
         <span class="empty-symbol">!</span>
         <b>Could not load records</b>
-        <p>${esc(e.message)}</p>
+        <p>${esc(e.message || 'Request failed')}</p>
         <button type="button" class="btn secondary small" id="retryLoadRecords" style="margin-top:10px">Try again</button>
       </div>`;
       $('#retryLoadRecords')?.addEventListener('click', () => loadRecords({ force: true }));
@@ -1588,7 +1599,8 @@ $('#scanForm')?.addEventListener('submit', async e => {
 });
 
 updateCategoryFields();
-checkSession();
+// NOTE: checkSession() is intentionally invoked at the end of this file
+// after all function declarations and localNotif setup are complete.
 
 /* ============================================================
    CAMERA SCANNER — with specific error guidance
@@ -1721,6 +1733,13 @@ function handleNotificationVisibility() {
   }
 }
 
+function resetLocalNotifBaseline() {
+  // localNotif is initialized at the top of this file; guard anyway so dashboard init never throws
+  if (typeof localNotif === 'undefined' || !localNotif) return;
+  localNotif.baselineReady = false;
+  localNotif.lastRecordIds = new Set();
+}
+
 function onAuthenticated() {
   const n = notifications;
   n.state.authenticated = true;
@@ -1731,10 +1750,9 @@ function onAuthenticated() {
   n.state.firstFetchDone = false;
   if (n.els.markAll) n.els.markAll.hidden = false;
   // Reset local-notif baseline so existing records don't fire as "new"
-  localNotif.baselineReady = false;
-  localNotif.lastRecordIds = new Set();
-  refreshNotifications();
-  updateNotifSettingsUI();
+  resetLocalNotifBaseline();
+  try { refreshNotifications(); } catch (e) { console.warn('[NextGen] refreshNotifications:', e); }
+  try { updateNotifSettingsUI(); } catch (e) { console.warn('[NextGen] updateNotifSettingsUI:', e); }
 }
 
 function onLoggedOut() {
@@ -1754,11 +1772,10 @@ function onLoggedOut() {
   n.els.panel?.classList.add('hidden');
   n.els.btn?.setAttribute('aria-expanded', 'false');
   if (n.els.markAll) n.els.markAll.hidden = false;
-  localNotif.baselineReady = false;
-  localNotif.lastRecordIds = new Set();
-  renderNotifications();
-  renderNotificationBadge();
-  updateNotifSettingsUI();
+  resetLocalNotifBaseline();
+  try { renderNotifications(); } catch (e) { console.warn('[NextGen] renderNotifications:', e); }
+  try { renderNotificationBadge(); } catch (e) { console.warn('[NextGen] renderNotificationBadge:', e); }
+  try { updateNotifSettingsUI(); } catch (e) { console.warn('[NextGen] updateNotifSettingsUI:', e); }
 }
 
 function isEndpointUnavailable(err) {
@@ -2564,5 +2581,9 @@ document.addEventListener('DOMContentLoaded', () => {
     toast('Pending records exported');
   });
   refreshQueueUI();
-  initLocalNotifSettings();
+  try { initLocalNotifSettings(); } catch (e) { console.warn('[NextGen] initLocalNotifSettings:', e); }
 });
+
+// Start session + dashboard load only after the full script has initialized
+// (avoids temporal-dead-zone access to localNotif / late-declared helpers).
+checkSession();
