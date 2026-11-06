@@ -1416,10 +1416,18 @@ async function confirmArchiveAfterExport() {
 
     // 2) Permanent delete on server (requires permanent: true)
     const ids = toDelete.map(r => r.id);
-    const result = await api('/records/archive', {
-      method: 'POST',
-      body: JSON.stringify({ ids, permanent: true })
-    });
+    let result;
+    try {
+      result = await api('/records/archive', {
+        method: 'POST',
+        body: JSON.stringify({ ids, permanent: true })
+      });
+    } catch (authErr) {
+      if (authErr && authErr.status === 401) {
+        throw new Error('Sign in as staff is required before permanently deleting records.');
+      }
+      throw authErr;
+    }
 
     const count = result.deletedCount ?? result.archivedCount ?? 0;
     setExportProgress(100, `Permanently deleted ${count} record${count === 1 ? '' : 's'}.`);

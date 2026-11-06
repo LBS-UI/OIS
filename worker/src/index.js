@@ -293,6 +293,63 @@ export default {
       return fail('Not found.', 404);
     }
 
+    // ---------- Health (public) ----------
+    if (path === '/api/health' && method === 'GET') {
+      return json({ ok: true });
+    }
+
+    // ---------- Login (public) — sets HttpOnly session cookie ----------
+    if (path === '/api/login' && method === 'POST') {
+      if (!env.SESSION_SECRET) {
+        return fail('SESSION_SECRET is not configured on the Worker.', 503);
+      }
+      let body;
+      try { body = await bodyJson(request); } catch (e) { return fail(e.message); }
+      const username = cleanString(body.username, 80);
+      const password = typeof body.password === 'string' ? body.password : '';
+      if (!username || !password) return fail('Username and password are required.');
+
+      let ok = false;
+      // Primary admin from environment secrets
+      if (
+        env.ADMIN_USERNAME &&
+        env.ADMIN_PASSWORD &&
+        username === env.ADMIN_USERNAME &&
+        password === env.ADMIN_PASSWORD
+      ) {
+        ok = true;
+      }
+      // Optional additional staff accounts in D1 users table
+      if (!ok) {
+        try {
+          const row = await env.DB.prepare(
+            'SELECT password_hash FROM users WHERE username = ?'
+          ).bind(username).first();
+          if (row && row.password_hash) {
+            ok = await verifyPassword(password, row.password_hash);
+          }
+        } catch (_) { /* users table may be empty */ }
+      }
+
+      if (!ok) return fail('Invalid username or password.', 401);
+
+      const token = await makeSession(username, env.SESSION_SECRET);
+      return json(
+        { ok: true, user: { username } },
+        200,
+        { 'Set-Cookie': cookie(token) }
+      );
+    }
+
+    // ---------- Logout (public) — clears session cookie ----------
+    if (path === '/api/logout' && method === 'POST') {
+      return json(
+        { ok: true },
+        200,
+        { 'Set-Cookie': cookie('', 0) }
+      );
+    }
+
     // ---------- Public PC Number lookup (read-only, never creates) ----------
     if (path === '/api/lookup-pc' && method === 'GET') {
       const pc = cleanString(url.searchParams.get('pc'), 40);
