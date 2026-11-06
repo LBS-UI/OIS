@@ -530,6 +530,19 @@ async function loadRecords(opts = {}) {
     // default: active only (server excludes archived)
     const result = await api('/records' + qs);
     state.records = Array.isArray(result.records) ? result.records : [];
+    if (result.dataGeneration != null && window.OfflineDB) {
+      try {
+        const localGen = await OfflineDB.getDataGeneration();
+        const serverGen = parseInt(String(result.dataGeneration), 10);
+        if (Number.isFinite(serverGen) && serverGen > localGen) {
+          await OfflineDB.clearQueue();
+          await OfflineDB.clearCachedRecords();
+          await OfflineDB.setDataGeneration(serverGen);
+        } else if (Number.isFinite(serverGen)) {
+          await OfflineDB.setDataGeneration(serverGen);
+        }
+      } catch (_) {}
+    }
     state.apiReady = true;
     state.hasLoadedOnce = true;
     state.recordsLastFetched = Date.now();
@@ -2218,7 +2231,26 @@ async function syncQueue() {
   let syncedCount = 0;
   let failedCount = 0;
   try {
-    const result = await api('/sync', { method: 'POST', body: JSON.stringify({ items: toSend }) });
+    let clientGen = 1;
+    try { clientGen = await OfflineDB.getDataGeneration(); } catch (_) {}
+    const result = await api('/sync', {
+      method: 'POST',
+      body: JSON.stringify({ items: toSend, dataGeneration: clientGen })
+    });
+    if (result.stale) {
+      toast('Server data was reset — clearing stale offline queue on this device');
+      try {
+        await OfflineDB.clearQueue();
+        await OfflineDB.clearCachedRecords();
+        if (result.dataGeneration) await OfflineDB.setDataGeneration(result.dataGeneration);
+      } catch (_) {}
+      state.records = [];
+      await loadRecords({ force: true });
+      return;
+    }
+    if (result.dataGeneration) {
+      try { await OfflineDB.setDataGeneration(result.dataGeneration); } catch (_) {}
+    }
     const byId = {};
     (result.results || []).forEach(r => { byId[r.id] = r; });
     for (const item of toSend) {
@@ -2230,6 +2262,10 @@ async function syncQueue() {
       } else if (res && res.status === 'conflict') {
         item.status = 'conflict';
         item.lastError = res.error || 'Conflict';
+        failedCount++;
+      } else if (res && res.status === 'rejected') {
+        item.status = 'failed';
+        item.lastError = res.error || 'Rejected after data reset';
         failedCount++;
       } else {
         item.status = 'failed';
@@ -2315,6 +2351,164 @@ window.addEventListener('offline', () => {
   updateOnlineStatus();
   toast('You are offline. Changes will be queued.');
 });
+
+/* ============================================================
+   PERMANENT WIPE ALL DATA — multi-step confirmed admin operation
+   ============================================================ */
+let wipeInFlight = false;
+let wipeActor = '';
+
+function wipeSetStep(step) {
+  ['wipeStep1', 'wipeStep2', 'wipeStep3'].forEach((id, i) => {
+    const el = $('#' + id);
+    if (el) el.classList.toggle('hidden', i + 1 !== step);
+  });
+  ['wipeActions1', 'wipeActions2', 'wipeActions3', 'wipeActionsDone'].forEach((id) => {
+    $('#' + id)?.classList.add('hidden');
+  });
+  if (step === 1) $('#wipeActions1')?.classList.remove('hidden');
+  if (step === 2) $('#wipeActions2')?.classList.remove('hidden');
+  if (step === 3) $('#wipeActions3')?.classList.remove('hidden');
+  if (step === 'done') $('#wipeActionsDone')?.classList.remove('hidden');
+}
+
+function openWipeDialog() {
+  const dlg = $('#wipeDialog');
+  if (!dlg) return;
+  wipeInFlight = false;
+  $('#wipeError')?.classList.add('hidden');
+  $('#wipeSuccess')?.classList.add('hidden');
+  $('#wipeProgress')?.classList.add('hidden');
+  if ($('#wipeConfirmInput')) $('#wipeConfirmInput').value = '';
+  if ($('#wipeClearLocalCheck')) $('#wipeClearLocalCheck').checked = true;
+  const exec = $('#wipeExecuteBtn');
+  if (exec) exec.disabled = false;
+  wipeSetStep(1);
+  // Resolve actor from /api/me when possible
+  api('/me').then((r) => {
+    wipeActor = (r && r.user && r.user.username) || 'staff';
+    if ($('#wipeActorName')) $('#wipeActorName').textContent = wipeActor;
+  }).catch(() => {
+    wipeActor = 'staff';
+    if ($('#wipeActorName')) $('#wipeActorName').textContent = '(not verified — sign in required)';
+  });
+  if (typeof dlg.showModal === 'function') dlg.showModal();
+  else dlg.setAttribute('open', '');
+}
+
+function closeWipeDialog() {
+  const dlg = $('#wipeDialog');
+  if (!dlg) return;
+  if (typeof dlg.close === 'function') dlg.close();
+  else dlg.removeAttribute('open');
+}
+
+async function executeWipe() {
+  if (wipeInFlight) return;
+  const errEl = $('#wipeError');
+  const okEl = $('#wipeSuccess');
+  errEl?.classList.add('hidden');
+  okEl?.classList.add('hidden');
+
+  wipeInFlight = true;
+  const exec = $('#wipeExecuteBtn');
+  if (exec) exec.disabled = true;
+  $('#wipeProgress')?.classList.remove('hidden');
+  $('#wipeActions3')?.classList.add('hidden');
+
+  try {
+    const clearLocal = !!$('#wipeClearLocalCheck')?.checked;
+    const result = await api('/admin/wipe-data', {
+      method: 'POST',
+      body: JSON.stringify({
+        confirmationPhrase: 'DELETE ALL DATA',
+        permanent: true,
+        scopes: ['records', 'scan_events'],
+      })
+    });
+
+    if (!result || !result.ok) {
+      throw new Error((result && result.error) || 'Wipe did not complete');
+    }
+
+    // Local cleanup only after server success, and only if requested
+    if (clearLocal && window.OfflineDB) {
+      try {
+        await OfflineDB.clearQueue();
+        await OfflineDB.clearCachedRecords();
+        if (result.dataGeneration) await OfflineDB.setDataGeneration(result.dataGeneration);
+      } catch (e) {
+        console.warn('[NextGen] Local cleanup after wipe:', e);
+      }
+    } else if (result.dataGeneration && window.OfflineDB) {
+      try { await OfflineDB.setDataGeneration(result.dataGeneration); } catch (_) {}
+    }
+
+    state.records = [];
+    state.recordsLastFetched = 0;
+    await loadRecords({ force: true });
+    renderHome();
+    renderRecords();
+
+    const deleted = result.deleted || {};
+    const msg =
+      `Permanent wipe completed by ${esc(result.actor || wipeActor)}. ` +
+      `Removed approximately ${deleted.records ?? 0} registration record(s) and ${deleted.scan_events ?? 0} scan event(s). ` +
+      `Staff accounts and audit logs were preserved. Dataset generation is now ${result.dataGeneration ?? '—'}.`;
+    if (okEl) {
+      okEl.innerHTML = msg;
+      okEl.classList.remove('hidden');
+    }
+    toast('Permanent data wipe completed');
+    wipeSetStep('done');
+  } catch (err) {
+    if (errEl) {
+      errEl.textContent = (err && err.message) ? err.message : String(err);
+      errEl.classList.remove('hidden');
+    }
+    toast('Wipe failed — data was not reported as deleted');
+    $('#wipeActions3')?.classList.remove('hidden');
+    if (exec) exec.disabled = false;
+  } finally {
+    wipeInFlight = false;
+    $('#wipeProgress')?.classList.add('hidden');
+  }
+}
+
+$('#wipeAllDataBtn')?.addEventListener('click', openWipeDialog);
+$('#wipeDialogClose')?.addEventListener('click', closeWipeDialog);
+$('#wipeCancel1')?.addEventListener('click', closeWipeDialog);
+$('#wipeContinue1')?.addEventListener('click', () => wipeSetStep(2));
+$('#wipeBack2')?.addEventListener('click', () => wipeSetStep(1));
+$('#wipeContinue2')?.addEventListener('click', () => {
+  const typed = ($('#wipeConfirmInput')?.value || '').trim();
+  if (typed !== 'DELETE ALL DATA') {
+    toast('Type DELETE ALL DATA exactly to continue');
+    return;
+  }
+  const summary = $('#wipeFinalSummary');
+  if (summary) {
+    summary.textContent =
+      `Administrator: ${wipeActor || 'staff'}. Scope: registration records + scan events. ` +
+      `Preserved: users, audit logs, credentials. ` +
+      ($('#wipeClearLocalCheck')?.checked
+        ? 'This device offline queue will be cleared after success.'
+        : 'This device offline queue will NOT be cleared automatically.');
+  }
+  wipeSetStep(3);
+});
+$('#wipeBack3')?.addEventListener('click', () => wipeSetStep(2));
+$('#wipeExecuteBtn')?.addEventListener('click', () => {
+  // Re-check phrase on final click in case user went back
+  const typed = ($('#wipeConfirmInput')?.value || '').trim();
+  if (typed !== 'DELETE ALL DATA') {
+    toast('Confirmation phrase no longer matches — go back and re-enter DELETE ALL DATA');
+    wipeSetStep(2);
+    return;
+  }
+  executeWipe();
+});
+$('#wipeDoneBtn')?.addEventListener('click', closeWipeDialog);
 
 // UI bindings
 document.addEventListener('DOMContentLoaded', () => {

@@ -109,6 +109,50 @@ const OfflineDB = {
   async exportPending() {
     const items = await this.getQueue();
     return items.filter(i => i.status === 'pending' || i.status === 'failed' || i.status === 'conflict');
+  },
+
+  async clearQueue() {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('queue', 'readwrite');
+      tx.objectStore('queue').clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  },
+
+  async clearCachedRecords() {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('records', 'readwrite');
+      tx.objectStore('records').clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  },
+
+  async getDataGeneration() {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('meta', 'readonly');
+      const req = tx.objectStore('meta').get('dataGeneration');
+      req.onsuccess = () => {
+        const v = req.result && req.result.value;
+        const n = parseInt(String(v), 10);
+        resolve(Number.isFinite(n) && n > 0 ? n : 1);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  },
+
+  async setDataGeneration(gen) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('meta', 'readwrite');
+      tx.objectStore('meta').put({ key: 'dataGeneration', value: String(gen) });
+      tx.oncomplete = () => resolve(gen);
+      tx.onerror = () => reject(tx.error);
+    });
   }
 };
 

@@ -184,6 +184,53 @@ async function requireUser(request, env) {
   return user ? { user } : { error: 'Authentication required.' };
 }
 
+/** Dataset generation — bumped on permanent wipe so stale offline queues are rejected */
+async function getDataGeneration(env) {
+  try {
+    const row = await env.DB.prepare(
+      "SELECT value FROM app_meta WHERE key = 'data_generation'"
+    ).first();
+    if (row && row.value != null) {
+      const n = parseInt(String(row.value), 10);
+      return Number.isFinite(n) && n > 0 ? n : 1;
+    }
+  } catch (_) { /* table may not exist yet */ }
+  return 1;
+}
+
+async function bumpDataGeneration(env) {
+  const current = await getDataGeneration(env);
+  const next = current + 1;
+  const ts = now();
+  try {
+    await env.DB.prepare(
+      `INSERT INTO app_meta (key, value, updated_at) VALUES ('data_generation', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    ).bind(String(next), ts).run();
+  } catch (e) {
+    // If app_meta missing, try create once then set
+    try {
+      await env.DB.prepare(
+        `CREATE TABLE IF NOT EXISTS app_meta (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )`
+      ).run();
+      await env.DB.prepare(
+        `INSERT INTO app_meta (key, value, updated_at) VALUES ('data_generation', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+      ).bind(String(next), ts).run();
+    } catch (_) {
+      throw e;
+    }
+  }
+  return next;
+}
+
+// In-memory lock to reduce concurrent wipe races on the same isolate
+let wipeInProgress = false;
+
 async function hashPassword(password) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.importKey(
@@ -334,7 +381,8 @@ export default {
         if (onlyArchived) sql = 'SELECT * FROM records WHERE archived = 1 ORDER BY archived_at DESC, created_at DESC';
         else if (includeArchived) sql = 'SELECT * FROM records ORDER BY created_at DESC';
         const { results = [] } = await env.DB.prepare(sql).all();
-        return json({ records: results.map(mapRecord) });
+        const dataGeneration = await getDataGeneration(env);
+        return json({ records: results.map(mapRecord), dataGeneration });
       } catch (e) {
         // Production D1 may not have the archived column yet — fall back safely
         const msg = String(e && e.message ? e.message : e);
@@ -342,8 +390,10 @@ export default {
           const { results = [] } = await env.DB.prepare(
             'SELECT * FROM records ORDER BY created_at DESC'
           ).all();
+          const dataGeneration = await getDataGeneration(env);
           return json({
             records: results.map(mapRecord),
+            dataGeneration,
             warning: 'Archive columns not migrated yet. Run worker/migrations/001_add_archived.sql on D1.',
           });
         }
@@ -362,7 +412,111 @@ export default {
     const user = auth.user;
 
     if (path === '/api/me' && method === 'GET') {
-      return json({ ok: true, user: { username: user } });
+      const dataGeneration = await getDataGeneration(env);
+      return json({ ok: true, user: { username: user }, dataGeneration });
+    }
+
+    // ---------- Permanent wipe of student/participant data (authenticated admin only) ----------
+    // Scope is server-side allowlisted. Never deletes users or audit_logs.
+    if (path === '/api/admin/wipe-data' && method === 'POST') {
+      let body;
+      try { body = await bodyJson(request); } catch (e) { return fail(e.message); }
+
+      const phrase = String(body.confirmationPhrase || '').trim();
+      if (phrase !== 'DELETE ALL DATA') {
+        return fail('Confirmation phrase does not match. Type DELETE ALL DATA exactly.', 400);
+      }
+      if (body.permanent !== true) {
+        return fail('permanent: true is required for this operation.', 400);
+      }
+
+      // Server-side allowlist only — frontend cannot invent table names
+      const ALLOWED_SCOPES = new Set(['records', 'scan_events']);
+      const requested = Array.isArray(body.scopes) ? body.scopes.map((s) => String(s)) : ['records', 'scan_events'];
+      const scopes = [...new Set(requested.filter((s) => ALLOWED_SCOPES.has(s)))];
+      if (!scopes.length) {
+        return fail('No valid deletion scopes selected. Allowed: records, scan_events.');
+      }
+
+      if (wipeInProgress) {
+        return fail('A wipe operation is already in progress. Wait for it to finish.', 409);
+      }
+      wipeInProgress = true;
+
+      const ts = now();
+      const counts = { records: 0, scan_events: 0 };
+      let newGeneration = null;
+
+      try {
+        // Count first for the audit / response
+        try {
+          const rc = await env.DB.prepare('SELECT COUNT(*) AS c FROM records').first();
+          counts.records = Number(rc && rc.c) || 0;
+        } catch (_) {}
+        try {
+          const sc = await env.DB.prepare('SELECT COUNT(*) AS c FROM scan_events').first();
+          counts.scan_events = Number(sc && sc.c) || 0;
+        } catch (_) {}
+
+        // Delete in dependency-safe order. scan_events cascade from records when FK is on,
+        // but also clear explicitly if requested / if cascade is unavailable.
+        if (scopes.includes('scan_events') || scopes.includes('records')) {
+          await env.DB.prepare('DELETE FROM scan_events').run();
+        }
+        if (scopes.includes('records')) {
+          await env.DB.prepare('DELETE FROM records').run();
+        }
+
+        newGeneration = await bumpDataGeneration(env);
+
+        // Audit AFTER wipe so evidence of the operation is preserved
+        try {
+          await env.DB.prepare(
+            `INSERT INTO audit_logs (id, action, record_id, actor, details, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          ).bind(
+            uuid(),
+            'permanent_wipe',
+            null,
+            user,
+            JSON.stringify({
+              scopes,
+              countsBefore: counts,
+              dataGeneration: newGeneration,
+              result: 'success',
+            }),
+            ts
+          ).run();
+        } catch (_) { /* table may lack details column on old DBs */ }
+
+        return json({
+          ok: true,
+          permanent: true,
+          scopes,
+          deleted: counts,
+          dataGeneration: newGeneration,
+          actor: user,
+          at: ts,
+          preserved: ['users', 'audit_logs', 'app_meta', 'staff credentials'],
+        });
+      } catch (e) {
+        try {
+          await env.DB.prepare(
+            `INSERT INTO audit_logs (id, action, record_id, actor, details, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          ).bind(
+            uuid(),
+            'permanent_wipe_failed',
+            null,
+            user,
+            JSON.stringify({ scopes, error: String(e && e.message ? e.message : e).slice(0, 300) }),
+            ts
+          ).run();
+        } catch (_) {}
+        return fail('Wipe failed. Data may be partially unchanged — check the dashboard and retry if needed.', 500);
+      } finally {
+        wipeInProgress = false;
+      }
     }
 
     // Optional in-app notification feed (empty until a real feed is implemented)
@@ -600,6 +754,21 @@ export default {
       const items = Array.isArray(body.items) ? body.items : [];
       const results = [];
 
+      // Reject entire batch if client dataset generation is older than the server wipe generation
+      const serverGen = await getDataGeneration(env);
+      const clientGen = body.dataGeneration != null ? parseInt(String(body.dataGeneration), 10) : null;
+      if (clientGen != null && Number.isFinite(clientGen) && clientGen < serverGen) {
+        return json({
+          results: items.map((item) => ({
+            id: item && item.id,
+            status: 'rejected',
+            error: 'Stale offline queue: server data was permanently reset. Clear local pending items and refresh.',
+          })),
+          dataGeneration: serverGen,
+          stale: true,
+        });
+      }
+
       for (const item of items) {
         const itemId = cleanString(item.id, 80);
         const type = cleanString(item.type, 40);
@@ -680,7 +849,7 @@ export default {
         }
       }
 
-      return json({ results });
+      return json({ results, dataGeneration: await getDataGeneration(env) });
     }
 
     return fail('Not found.', 404);

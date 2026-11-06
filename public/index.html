@@ -3701,6 +3701,82 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
             <p>Connect the database and register your first participant.</p>
           </div>
         </article>
+
+        <article class="panel danger-zone-panel" id="dangerZonePanel">
+          <div class="panel-heading">
+            <div>
+              <div class="section-kicker">MAINTENANCE</div>
+              <h3>Permanent delete all data</h3>
+            </div>
+          </div>
+          <p class="muted">
+            Permanently removes participant registration records and scan history from the shared Cloudflare D1 database.
+            Staff accounts, passwords, and audit logs are <b>not</b> deleted.
+          </p>
+          <p class="microcopy">
+            Offline devices may still hold local copies until they reconnect. This action cannot restore data from the application.
+          </p>
+          <button type="button" class="btn danger" id="wipeAllDataBtn">Permanent Delete All Data</button>
+        </article>
+
+        <dialog id="wipeDialog" class="wipe-dialog" aria-labelledby="wipeDialogTitle">
+          <div class="wipe-dialog-header">
+            <h3 id="wipeDialogTitle">Permanent delete all data</h3>
+            <button type="button" class="record-modal-close" id="wipeDialogClose" aria-label="Close">×</button>
+          </div>
+          <div class="wipe-dialog-body">
+            <div id="wipeStep1" class="wipe-step">
+              <p class="wipe-warn">
+                <strong>WARNING:</strong> Permanent deletion will remove the selected application data from the shared database.
+                This action cannot be undone through the application.
+              </p>
+              <ul class="wipe-scope-list">
+                <li><b>Will be deleted:</b> participant / student / employee / visitor registration records (including scores)</li>
+                <li><b>Will be deleted:</b> QR scan event history</li>
+                <li><b>Preserved:</b> staff user accounts and credentials</li>
+                <li><b>Preserved:</b> audit logs (including a record of this wipe)</li>
+                <li><b>Preserved:</b> app configuration and session secrets</li>
+              </ul>
+              <p class="microcopy">Other devices that are offline will not clear automatically until they next connect successfully.</p>
+            </div>
+            <div id="wipeStep2" class="wipe-step hidden">
+              <p>Signed in as: <strong id="wipeActorName">—</strong></p>
+              <p>Type the exact phrase below to continue:</p>
+              <p class="wipe-phrase"><code>DELETE ALL DATA</code></p>
+              <label class="wipe-input-label">Confirmation phrase
+                <input type="text" id="wipeConfirmInput" autocomplete="off" spellcheck="false" placeholder="Type DELETE ALL DATA">
+              </label>
+              <label class="wipe-check">
+                <input type="checkbox" id="wipeClearLocalCheck" checked>
+                Also clear offline queue and cached records on <b>this device</b> after the server confirms success
+              </label>
+            </div>
+            <div id="wipeStep3" class="wipe-step hidden">
+              <p class="wipe-warn">
+                Final step. Pressing the button below will permanently erase the selected data on the server.
+              </p>
+              <p id="wipeFinalSummary" class="microcopy"></p>
+            </div>
+            <div id="wipeProgress" class="hidden" role="status">Deleting… please wait.</div>
+            <div id="wipeError" class="export-error hidden" role="alert"></div>
+            <div id="wipeSuccess" class="wipe-success hidden" role="status"></div>
+          </div>
+          <div class="wipe-dialog-actions" id="wipeActions1">
+            <button type="button" class="btn text" id="wipeCancel1">Cancel</button>
+            <button type="button" class="btn secondary" id="wipeContinue1">Continue to Verification</button>
+          </div>
+          <div class="wipe-dialog-actions hidden" id="wipeActions2">
+            <button type="button" class="btn text" id="wipeBack2">Back</button>
+            <button type="button" class="btn secondary" id="wipeContinue2">Continue to Final Step</button>
+          </div>
+          <div class="wipe-dialog-actions hidden" id="wipeActions3">
+            <button type="button" class="btn text" id="wipeBack3">Back</button>
+            <button type="button" class="btn danger" id="wipeExecuteBtn">PERMANENTLY DELETE DATA</button>
+          </div>
+          <div class="wipe-dialog-actions hidden" id="wipeActionsDone">
+            <button type="button" class="btn primary" id="wipeDoneBtn">Done</button>
+          </div>
+        </dialog>
       </div>
 
       <!-- ---------- REGISTRATION ---------- -->
