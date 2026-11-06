@@ -376,55 +376,59 @@ export default {
       return json({ ok: true });
     }
 
-    // ---------- Archive records (authenticated, reversible) ----------
+    // ---------- Permanent delete after confirmed export (authenticated) ----------
+    // Body: { ids: string[], permanent: true }
+    // When permanent is true (required), rows are hard-deleted from D1 (scan_events cascade).
     if (path === '/api/records/archive' && method === 'POST') {
       let body;
       try { body = await bodyJson(request); } catch (e) { return fail(e.message); }
       const ids = Array.isArray(body.ids) ? body.ids.map((id) => cleanString(id, 80)).filter(Boolean) : [];
-      if (!ids.length) return fail('Provide at least one record id to archive.');
-      if (ids.length > 500) return fail('Too many records in one archive request (max 500).');
+      if (!ids.length) return fail('Provide at least one record id to delete.');
+      if (ids.length > 500) return fail('Too many records in one request (max 500).');
+      // Require explicit permanent flag so accidental soft-archive clients cannot wipe data silently
+      if (body.permanent !== true) {
+        return fail('Permanent deletion requires permanent: true in the request body.', 400);
+      }
 
       const ts = now();
-      const archived = [];
+      const deleted = [];
       const skipped = [];
 
       try {
-        // Process in a batch; D1 supports sequential statements
         for (const id of ids) {
           const existing = await env.DB.prepare(
-            'SELECT id, archived FROM records WHERE id = ?'
+            'SELECT id FROM records WHERE id = ?'
           ).bind(id).first();
           if (!existing) {
             skipped.push({ id, reason: 'not_found' });
             continue;
           }
-          if (existing.archived) {
-            skipped.push({ id, reason: 'already_archived' });
-            continue;
-          }
+          try {
+            await env.DB.prepare(
+              `INSERT INTO audit_logs (id, action, record_id, actor, details, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)`
+            ).bind(uuid(), 'permanent_delete', id, user, JSON.stringify({ batchSize: ids.length }), ts).run();
+          } catch (_) { /* best-effort audit before delete */ }
+
           const result = await env.DB.prepare(
-            'UPDATE records SET archived = 1, archived_at = ?, archived_by = ?, updated_at = ?, updated_by = ? WHERE id = ? AND COALESCE(archived, 0) = 0'
-          ).bind(ts, user, ts, user, id).run();
+            'DELETE FROM records WHERE id = ?'
+          ).bind(id).run();
           if (result.meta.changes) {
-            archived.push(id);
-            try {
-              await env.DB.prepare(
-                `INSERT INTO audit_logs (id, action, record_id, actor, details, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?)`
-              ).bind(uuid(), 'archive', id, user, JSON.stringify({ batchSize: ids.length }), ts).run();
-            } catch (_) { /* best-effort audit */ }
+            deleted.push(id);
           } else {
             skipped.push({ id, reason: 'no_change' });
           }
         }
         return json({
           ok: true,
-          archivedCount: archived.length,
-          archivedIds: archived,
+          deletedCount: deleted.length,
+          archivedCount: deleted.length, // backward-compatible alias for older frontends
+          deletedIds: deleted,
           skipped,
+          permanent: true,
         });
       } catch (e) {
-        return fail('Could not archive records.', 500);
+        return fail('Could not permanently delete records.', 500);
       }
     }
 

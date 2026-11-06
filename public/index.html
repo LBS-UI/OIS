@@ -3912,7 +3912,7 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
           </div>
           <div class="export-dialog-actions" id="exportDialogActions">
             <button type="button" class="btn primary" id="exportKeepBtn">Download and Keep Records</button>
-            <button type="button" class="btn secondary" id="exportArchiveBtn">Download and Archive Records</button>
+            <button type="button" class="btn secondary" id="exportArchiveBtn">Download and Permanently Delete</button>
             <button type="button" class="btn text" id="exportCancelBtn">Cancel</button>
           </div>
           <div class="export-dialog-actions hidden" id="exportArchiveConfirmActions">
@@ -4120,12 +4120,17 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
 })();
 </script>
 
-<!-- Service worker registration (canonical path: /sw.js) -->
+<!-- Service worker: primary registration lives in app.js (update + reload handling) -->
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(err => {
-      console.warn('[NextGen] Service worker registration failed:', err);
+    // Lightweight register if app.js has not run yet; app.js also registers with update logic
+    navigator.serviceWorker.getRegistration('/').then((existing) => {
+      if (!existing) {
+        navigator.serviceWorker.register('/sw.js').catch(err => {
+          console.warn('[NextGen] Service worker registration failed:', err);
+        });
+      }
     });
   });
 }

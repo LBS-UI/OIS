@@ -1227,19 +1227,7 @@ function openExportDialog() {
   $('#exportArchiveConfirmActions')?.classList.add('hidden');
   $('#exportDoneActions')?.classList.add('hidden');
   $('#exportArchiveBtn').disabled = false;
-
-  // Disable archive when viewing already-archived or mixed without care; prefer active only
-  const hasArchived = records.some(r => r.archived);
-  const allArchived = records.every(r => r.archived);
-  if (allArchived) {
-    $('#exportArchiveBtn').disabled = true;
-    $('#exportArchiveBtn').title = 'Selected records are already archived';
-  } else {
-    $('#exportArchiveBtn').disabled = false;
-    $('#exportArchiveBtn').title = hasArchived
-      ? 'Only non-archived records in this selection will be archived'
-      : '';
-  }
+  $('#exportArchiveBtn').title = 'Export then permanently delete these records from the database';
 
   if (typeof dlg.showModal === 'function') dlg.showModal();
   else dlg.setAttribute('open', '');
@@ -1368,74 +1356,79 @@ async function checkPendingConflicts(recordIds) {
 }
 
 async function runExportArchive() {
-  const toArchive = exportSession.records.filter(r => !r.archived);
-  if (!toArchive.length) {
-    toast('No active (non-archived) records in this selection');
+  const toDelete = exportSession.records.filter(r => r && r.id);
+  if (!toDelete.length) {
+    toast('No records in this selection to delete');
     return;
   }
 
-  // Offline safeguard
-  const conflicts = await checkPendingConflicts(toArchive.map(r => r.id));
+  // Offline safeguard — never wipe rows that still have pending local changes
+  const conflicts = await checkPendingConflicts(toDelete.map(r => r.id));
   if (conflicts.length) {
     const errEl = $('#exportError');
     if (errEl) {
       errEl.textContent = `${conflicts.length} selected record(s) still have pending offline changes. Synchronize first, or use “Download and Keep Records” instead.`;
       errEl.classList.remove('hidden');
     }
-    toast('Pending offline changes detected — archive blocked');
+    toast('Pending offline changes detected — permanent delete blocked');
     return;
   }
 
-  // Show explicit final confirmation
+  // Show explicit final confirmation (permanent wipe)
   $('#exportDialogActions')?.classList.add('hidden');
   const conf = $('#exportArchiveConfirmActions');
   conf?.classList.remove('hidden');
   const msg = $('#exportArchiveConfirmText');
   if (msg) {
-    msg.textContent = `This will archive ${toArchive.length} record${toArchive.length === 1 ? '' : 's'}. They will leave the active list but remain recoverable by authorized staff. Continue only after the export files are ready.`;
+    msg.textContent = `This will PERMANENTLY DELETE ${toDelete.length} record${toDelete.length === 1 ? '' : 's'} from the database after the export files are generated. This cannot be undone.`;
   }
+  const confirmBtn = $('#exportArchiveConfirmBtn');
+  if (confirmBtn) confirmBtn.textContent = 'Confirm permanent delete';
 }
 
 async function confirmArchiveAfterExport() {
   const errEl = $('#exportError');
   errEl?.classList.add('hidden');
-  const toArchive = exportSession.records.filter(r => !r.archived);
-  if (!toArchive.length) return;
+  const toDelete = exportSession.records.filter(r => r && r.id);
+  if (!toDelete.length) return;
 
   $('#exportArchiveConfirmActions')?.classList.add('hidden');
   exportSession.archiving = true;
 
   try {
-    // 1) Generate files first — never archive on failed export
+    // 1) Generate files first — never delete on failed export
     const files = await generateExportFiles();
     await packageOrDownload(files);
-    setExportProgress(100, 'Files ready. Archiving records on server…');
+    setExportProgress(100, 'Files ready. Permanently deleting records on server…');
 
-    // 2) Archive on server
-    const ids = toArchive.map(r => r.id);
+    // 2) Permanent delete on server (requires permanent: true)
+    const ids = toDelete.map(r => r.id);
     const result = await api('/records/archive', {
       method: 'POST',
-      body: JSON.stringify({ ids })
+      body: JSON.stringify({ ids, permanent: true })
     });
 
-    const count = result.archivedCount ?? 0;
-    setExportProgress(100, `Archived ${count} record${count === 1 ? '' : 's'}.`);
-    toast(`Exported and archived ${count} record${count === 1 ? '' : 's'}`);
+    const count = result.deletedCount ?? result.archivedCount ?? 0;
+    setExportProgress(100, `Permanently deleted ${count} record${count === 1 ? '' : 's'}.`);
+    toast(`Exported and permanently deleted ${count} record${count === 1 ? '' : 's'}`);
 
-    // Refresh list so archived rows disappear from active view
+    // Drop deleted ids from local state and refresh
+    const gone = new Set(ids);
+    state.records = state.records.filter(r => !gone.has(r.id));
     state.recordsLastFetched = 0;
     await loadRecords({ force: true });
     renderRecords();
+    renderHome();
 
     $('#exportDoneActions')?.classList.remove('hidden');
   } catch (err) {
     if (errEl) {
-      errEl.textContent = (err.message || String(err)) + ' — records were NOT archived.';
+      errEl.textContent = (err.message || String(err)) + ' — records were NOT deleted.';
       errEl.classList.remove('hidden');
     }
     $('#exportDialogActions')?.classList.remove('hidden');
     $('#exportProgress')?.classList.add('hidden');
-    toast('Archive aborted because export or server request failed');
+    toast('Delete aborted because export or server request failed');
   } finally {
     exportSession.archiving = false;
   }
@@ -2284,10 +2277,32 @@ recordScanEvent = async function (recordId) {
   return _origRecordScan(recordId);
 };
 
-// Service worker registration
+// Service worker registration — pick up new deploys without requiring a manual hard refresh
 if ('serviceWorker' in navigator) {
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshing) return;
+    refreshing = true;
+    window.location.reload();
+  });
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    navigator.serviceWorker.register('/sw.js').then((reg) => {
+      // Check for updates when the tab becomes visible again
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) reg.update().catch(() => {});
+      });
+      setInterval(() => { reg.update().catch(() => {}); }, 60 * 60 * 1000);
+      if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+      reg.addEventListener('updatefound', () => {
+        const worker = reg.installing;
+        if (!worker) return;
+        worker.addEventListener('statechange', () => {
+          if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+            worker.postMessage({ type: 'SKIP_WAITING' });
+          }
+        });
+      });
+    }).catch(() => {});
   });
 }
 
