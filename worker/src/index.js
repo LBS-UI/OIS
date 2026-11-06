@@ -4,6 +4,15 @@
  *
  * Routes under /api/*
  * Non-API paths are served from the ASSETS binding (public/).
+ *
+ * Security model:
+ *   - Public:  POST /api/records (student self-registration), POST /api/login,
+ *              POST /api/logout, GET /api/health
+ *   - Authed:  everything else that reads, edits, deletes, or reports
+ *   - Session: HMAC-SHA256 signed cookie (HttpOnly; Secure; SameSite=Strict)
+ *   - Passwords: PBKDF2-SHA256 (100k iterations) + 16-byte salt.
+ *     Admin can be configured via ADMIN_PASSWORD_HASH (preferred)
+ *     or ADMIN_PASSWORD (plaintext, constant-time compared, warning logged).
  */
 
 const COOKIE_NAME = 'ngsc_session';
@@ -27,6 +36,9 @@ const fail = (message, status = 400) => json({ error: message }, status);
 const now = () => new Date().toISOString();
 const uuid = () => crypto.randomUUID();
 const encoder = new TextEncoder();
+
+// Per-isolate guard so the plaintext-admin warning is not spammed on every login
+let warnedPlaintextAdmin = false;
 
 function b64url(bytes) {
   let s = '';
@@ -68,6 +80,18 @@ function timingSafeEqual(a, b) {
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
   return diff === 0;
+}
+
+// Compare two strings without leaking length or content via timing.
+// Hashing both to fixed-length SHA-256 and using timingSafeEqual removes
+// any early-exit behaviour based on where they differ or how long they are.
+async function constantTimeStringEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const [ha, hb] = await Promise.all([
+    crypto.subtle.digest('SHA-256', encoder.encode(a)),
+    crypto.subtle.digest('SHA-256', encoder.encode(b)),
+  ]);
+  return timingSafeEqual(new Uint8Array(ha), new Uint8Array(hb));
 }
 
 async function readSession(request, secret) {
@@ -273,7 +297,13 @@ async function hashPassword(password) {
 async function verifyPassword(password, stored) {
   const [saltB64, hashB64] = stored.split(':');
   if (!saltB64 || !hashB64) return false;
-  const salt = Uint8Array.from(atob(saltB64), (c) => c.charCodeAt(0));
+  let salt, expectedBytes;
+  try {
+    salt = Uint8Array.from(atob(saltB64), (c) => c.charCodeAt(0));
+    expectedBytes = Uint8Array.from(atob(hashB64), (c) => c.charCodeAt(0));
+  } catch {
+    return false;
+  }
   const key = await crypto.subtle.importKey(
     'raw',
     encoder.encode(password),
@@ -286,8 +316,46 @@ async function verifyPassword(password, stored) {
     key,
     256
   );
-  const computed = btoa(String.fromCharCode(...new Uint8Array(hash)));
-  return computed === hashB64;
+  const computedBytes = new Uint8Array(hash);
+  if (computedBytes.length !== expectedBytes.length) return false;
+  return timingSafeEqual(computedBytes, expectedBytes);
+}
+
+/**
+ * Verify a password against the primary admin configured via Worker secrets.
+ *
+ * Preference order:
+ *   1. env.ADMIN_PASSWORD_HASH  (PBKDF2 "salt:hash" — recommended)
+ *   2. env.ADMIN_PASSWORD       (plaintext — constant-time compared, warning logged once)
+ *
+ * Returns true only on a definite match.
+ */
+async function verifyAdminPassword(username, password, env) {
+  if (!env.ADMIN_USERNAME) return false;
+  if (username !== env.ADMIN_USERNAME) return false;
+
+  if (env.ADMIN_PASSWORD_HASH) {
+    try {
+      return await verifyPassword(password, env.ADMIN_PASSWORD_HASH);
+    } catch (e) {
+      console.error('[NextGen] ADMIN_PASSWORD_HASH verification failed:',
+        e && e.message ? e.message : e);
+      return false;
+    }
+  }
+
+  if (env.ADMIN_PASSWORD) {
+    if (!warnedPlaintextAdmin) {
+      warnedPlaintextAdmin = true;
+      console.warn(
+        '[NextGen] ADMIN_PASSWORD is stored as plaintext. ' +
+        'Set the ADMIN_PASSWORD_HASH secret (see hashPassword helper) and unset ADMIN_PASSWORD.'
+      );
+    }
+    return await constantTimeStringEqual(password, env.ADMIN_PASSWORD);
+  }
+
+  return false;
 }
 
 export default {
@@ -313,6 +381,10 @@ export default {
       return fail('Not found.', 404);
     }
 
+    // ========================================================
+    // PUBLIC ROUTES (no session required)
+    // ========================================================
+
     // ---------- Health (public) ----------
     if (path === '/api/health' && method === 'GET') {
       return json({ ok: true });
@@ -330,15 +402,10 @@ export default {
       if (!username || !password) return fail('Username and password are required.');
 
       let ok = false;
-      // Primary admin from environment secrets
-      if (
-        env.ADMIN_USERNAME &&
-        env.ADMIN_PASSWORD &&
-        username === env.ADMIN_USERNAME &&
-        password === env.ADMIN_PASSWORD
-      ) {
-        ok = true;
-      }
+
+      // Primary admin from environment secrets (ADMIN_PASSWORD_HASH preferred).
+      ok = await verifyAdminPassword(username, password, env);
+
       // Optional additional staff accounts in D1 users table
       if (!ok) {
         try {
@@ -370,32 +437,10 @@ export default {
       );
     }
 
-    // ---------- Public PC Number lookup (read-only, never creates) ----------
-    if (path === '/api/lookup-pc' && method === 'GET') {
-      const pc = cleanString(url.searchParams.get('pc'), 40);
-      if (!pc) return fail('PC Number is required.');
-      const { results = [] } = await env.DB.prepare(
-        'SELECT * FROM records WHERE pc_number = ? ORDER BY created_at DESC'
-      ).bind(pc).all();
-      if (!results.length) return fail('No record found for that PC Number.', 404);
-      return json({ records: results.map(mapRecord) });
-    }
-
-
-    // ---------- Public record deletion (no login required) ----------
-    const publicDeleteMatch = path.match(/^\/api\/records\/([^/]+)$/);
-    if (publicDeleteMatch && method === 'DELETE') {
-      const id = decodeURIComponent(publicDeleteMatch[1]);
-      try {
-        const result = await env.DB.prepare('DELETE FROM records WHERE id = ?').bind(id).run();
-        if (!result.meta.changes) return fail('Record not found.', 404);
-        return json({ ok: true });
-      } catch (e) {
-        return fail('Could not delete the record.', 500);
-      }
-    }
-
-    // ---------- Public registration (no login required) ----------
+    // ---------- Public registration (student self-registration) ----------
+    // Intentionally public by design: the Student Portal must let students
+    // register themselves without a staff login. Only participant fields are
+    // accepted; no administrative metadata is set by the caller.
     if (path === '/api/records' && method === 'POST') {
       let body, data;
       try {
@@ -447,9 +492,39 @@ export default {
       }
     }
 
+    // ========================================================
+    // AUTHENTICATED ROUTES (session required)
+    // ========================================================
+    const auth = await requireUser(request, env);
+    if (auth.error) {
+      return fail(
+        auth.error,
+        auth.error === 'Authentication required.' ? 401 : 503
+      );
+    }
+    const user = auth.user;
 
+    if (path === '/api/me' && method === 'GET') {
+      const dataGeneration = await getDataGeneration(env);
+      return json({ ok: true, user: { username: user }, dataGeneration });
+    }
 
-    // ---------- Public records list (for overview) — active records only ----------
+    // ---------- PC Number lookup (authenticated staff only) ----------
+    // Staff use this on #page-scores to find a student by PC Number.
+    // Students cannot reach this page in student-mode.
+    if (path === '/api/lookup-pc' && method === 'GET') {
+      const pc = cleanString(url.searchParams.get('pc'), 40);
+      if (!pc) return fail('PC Number is required.');
+      const { results = [] } = await env.DB.prepare(
+        'SELECT * FROM records WHERE pc_number = ? ORDER BY created_at DESC'
+      ).bind(pc).all();
+      if (!results.length) return fail('No record found for that PC Number.', 404);
+      return json({ records: results.map(mapRecord) });
+    }
+
+    // ---------- Records list (authenticated staff only) ----------
+    // Students do not see other participants' records. Teacher dashboard,
+    // exports, and reports all read from here.
     if (path === '/api/records' && method === 'GET') {
       const includeArchived = url.searchParams.get('archived') === '1' || url.searchParams.get('include_archived') === '1';
       const onlyArchived = url.searchParams.get('archived') === 'only';
@@ -478,24 +553,7 @@ export default {
       }
     }
 
-    // ---------- Authenticated endpoints ----------
-    const auth = await requireUser(request, env);
-    if (auth.error) {
-      return fail(
-        auth.error,
-        auth.error === 'Authentication required.' ? 401 : 503
-      );
-    }
-    const user = auth.user;
-
-    if (path === '/api/me' && method === 'GET') {
-      const dataGeneration = await getDataGeneration(env);
-      return json({ ok: true, user: { username: user }, dataGeneration });
-    }
-
     // ---------- Permanent wipe — sequential validation (authenticated staff only) ----------
-    // Auth already enforced above via requireUser → user is set.
-    // Never deletes users, audit_logs, or credentials.
     if (path === '/api/admin/wipe-data') {
       const operationId = uuid();
 
@@ -549,7 +607,6 @@ export default {
       }
 
       // Step B — authorization already passed (requireUser). user is authenticated staff.
-      // (No further role table exists in this project beyond session login.)
 
       // Step C — scope allowlist + DB reachability
       const ALLOWED_SCOPES = new Set(['records', 'scan_events']);
@@ -613,8 +670,6 @@ export default {
         } catch (_) {}
 
         // Step D — sequential deletes (child table first)
-        // D1 does not expose multi-statement transactions the same way as full SQLite;
-        // we delete in dependency order and verify emptiness afterward.
         if (scopes.includes('scan_events') || scopes.includes('records')) {
           try {
             await env.DB.prepare('DELETE FROM scan_events').run();
@@ -758,7 +813,6 @@ export default {
     }
 
     // ---------- Permanent delete after confirmed export (authenticated) ----------
-    // Body: { ids: string[], permanent: true }
     if (path === '/api/records/archive' && method === 'POST') {
       const operationId = uuid();
       let body;
@@ -786,7 +840,6 @@ export default {
       try {
         for (const id of ids) {
           try {
-            // Delete scan_events for this record first (safe if table/FK missing)
             try {
               await env.DB.prepare('DELETE FROM scan_events WHERE record_id = ?').bind(id).run();
             } catch (_) {}
@@ -797,7 +850,6 @@ export default {
 
             if (result.meta && result.meta.changes) {
               deleted.push(id);
-              // Best-effort audit — never fail the delete because of logging
               try {
                 await writeAudit(env, {
                   action: 'permanent_delete',
@@ -866,6 +918,7 @@ export default {
 
     const recordMatch = path.match(/^\/api\/records\/([^/]+)$/);
 
+    // ---------- Single-record DELETE (now reachable — previously shadowed) ----------
     if (recordMatch && method === 'DELETE') {
       const id = decodeURIComponent(recordMatch[1]);
       try {
@@ -927,8 +980,7 @@ export default {
       }
     }
 
-
-    // ---------- Score-only update (authenticated, does not change identity fields) ----------
+    // ---------- Score-only update (authenticated) ----------
     const scoreMatch = path.match(/^\/api\/records\/([^/]+)\/scores$/);
     if (scoreMatch && method === 'PATCH') {
       const id = decodeURIComponent(scoreMatch[1]);
@@ -950,7 +1002,6 @@ export default {
           'UPDATE records SET pre_test = ?, post_test = ?, updated_at = ?, updated_by = ? WHERE id = ?'
         ).bind(preTest, postTest, ts, user, id).run();
 
-        // Audit log (best-effort)
         try {
           await env.DB.prepare(
             `INSERT INTO audit_logs (id, action, record_id, actor, previous_pre_test, previous_post_test, new_pre_test, new_post_test, created_at)
@@ -997,7 +1048,6 @@ export default {
       return json({ record: mapRecord(r) });
     }
 
-
     // ---------- Offline sync endpoint (authenticated, idempotent) ----------
     if (path === '/api/sync' && method === 'POST') {
       let body;
@@ -1005,7 +1055,6 @@ export default {
       const items = Array.isArray(body.items) ? body.items : [];
       const results = [];
 
-      // Reject entire batch if client dataset generation is older than the server wipe generation
       const serverGen = await getDataGeneration(env);
       const clientGen = body.dataGeneration != null ? parseInt(String(body.dataGeneration), 10) : null;
       if (clientGen != null && Number.isFinite(clientGen) && clientGen < serverGen) {
@@ -1034,7 +1083,6 @@ export default {
             if (!recordId) { results.push({ id: itemId, status: 'failed', error: 'Missing recordId.' }); continue; }
             const exists = await env.DB.prepare('SELECT id FROM records WHERE id = ?').bind(recordId).first();
             if (!exists) { results.push({ id: itemId, status: 'failed', error: 'Record not found.' }); continue; }
-            // Idempotent: use client-provided id; ignore if already inserted
             await env.DB.prepare(
               'INSERT OR IGNORE INTO scan_events (id, record_id, scanned_at, scanned_by, purpose) VALUES (?, ?, ?, ?, ?)'
             ).bind(itemId, recordId, item.createdAt || now(), user, cleanString(item.purpose, 60) || 'staff_lookup').run();
@@ -1045,7 +1093,6 @@ export default {
             if (!recordId) { results.push({ id: itemId, status: 'failed', error: 'Missing recordId.' }); continue; }
             const existing = await env.DB.prepare('SELECT * FROM records WHERE id = ?').bind(recordId).first();
             if (!existing) { results.push({ id: itemId, status: 'failed', error: 'Record not found.' }); continue; }
-            // Conflict check: reject if server was updated after the client's base timestamp
             const baseUpdated = item.baseUpdatedAt || null;
             if (baseUpdated && existing.updated_at && existing.updated_at > baseUpdated) {
               results.push({ id: itemId, status: 'conflict', error: 'Server record is newer. Refresh and retry.', serverRecord: mapRecord(existing) });
@@ -1070,7 +1117,6 @@ export default {
             results.push({ id: itemId, status: 'synced' });
 
           } else if (type === 'registration') {
-            // Offline registration: create only if PC number not already taken in category
             let data;
             try { data = normalize(item.payload || {}); } catch (e) {
               results.push({ id: itemId, status: 'failed', error: e.message }); continue;
