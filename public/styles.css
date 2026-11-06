@@ -1770,3 +1770,46 @@ h3{font:700 15px Manrope;margin-bottom:5px;color:var(--navy-900)}
   .export-format-check{font-size:12px}
   .export-dialog-actions .btn{min-width:0;flex:1 1 100%}
 }
+
+/* ------------------------------------------------------------
+   LOCAL NOTIFICATION SETTINGS
+   ------------------------------------------------------------ */
+.notif-settings-intro{margin:0 0 14px;font-size:13px;line-height:1.45}
+.notif-settings-grid{display:flex;flex-direction:column;gap:12px}
+.notif-setting-row{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding:10px 12px;
+  border:1px solid var(--border,#e2e8f0);
+  border-radius:10px;
+  background:var(--bg-muted,#f8fafc);
+}
+.notif-setting-row b{display:block;font-size:13px}
+.notif-setting-row small{display:block;color:var(--muted);font-size:12px;margin-top:2px}
+.notif-setting-actions{display:flex;flex-wrap:wrap;gap:8px}
+.notif-toggle{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  font-size:13px;
+  cursor:pointer;
+  user-select:none;
+}
+.notif-toggle input{accent-color:var(--primary,#1a5fb4)}
+.notif-perm-help{
+  font-size:12px;
+  line-height:1.45;
+  padding:10px 12px;
+  border-radius:8px;
+  background:#fff7ed;
+  color:#9a3412;
+}
+.notif-audio-note{margin:0;font-size:12px;line-height:1.4}
+[data-theme="dark"] .notif-setting-row{background:#0f1e2d;border-color:#1c3044}
+[data-theme="dark"] .notif-perm-help{background:#431407;color:#fdba74}
+@media (max-width:560px){
+  .notif-setting-row{flex-direction:column;align-items:flex-start}
+}

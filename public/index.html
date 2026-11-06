@@ -3686,6 +3686,49 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
           </article>
         </div>
 
+        <article class="panel" id="notificationSettingsPanel">
+          <div class="panel-heading">
+            <div>
+              <div class="section-kicker">LOCAL NOTIFICATIONS</div>
+              <h3>Browser alerts &amp; sound</h3>
+            </div>
+          </div>
+          <p class="muted notif-settings-intro">
+            Local Chrome notifications appear on this device while the dashboard is open (or recently focused).
+            They are not remote push alerts and will not arrive on other devices solely because records are stored in D1.
+          </p>
+          <div class="notif-settings-grid">
+            <div class="notif-setting-row">
+              <div>
+                <b>Permission</b>
+                <small id="notifPermStatus">Checking…</small>
+              </div>
+              <button type="button" class="btn secondary small" id="enableBrowserNotifBtn">Enable notifications</button>
+            </div>
+            <div class="notif-setting-row">
+              <div>
+                <b>Custom sound</b>
+                <small>Plays the site MP3 when the tab is active and sound is allowed</small>
+              </div>
+              <label class="notif-toggle">
+                <input type="checkbox" id="notifSoundToggle" checked>
+                <span>Sound on</span>
+              </label>
+            </div>
+            <div class="notif-setting-actions">
+              <button type="button" class="btn secondary small" id="testBrowserNotifBtn">Test notification</button>
+              <button type="button" class="btn secondary small" id="testNotifSoundBtn">Test sound</button>
+            </div>
+            <div id="notifPermHelp" class="notif-perm-help muted hidden">
+              Permission was denied. In Chrome: padlock icon next to the address bar → Site settings → Notifications → Allow, then reload this page.
+              Do not expect repeated permission prompts after a denial.
+            </div>
+            <p class="microcopy notif-audio-note">
+              Browsers often block audio when the tab is backgrounded or closed. Native notifications may use the system sound instead of the custom MP3 in those cases.
+            </p>
+          </div>
+        </article>
+
         <article class="panel recent-panel">
           <div class="panel-heading">
             <div>
@@ -4119,11 +4162,11 @@ button, .btn, .nav-link, .quick-card, .category-card, .notification-item {
 })();
 </script>
 
-<!-- Service worker registration -->
+<!-- Service worker registration (canonical path: /sw.js) -->
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/service-worker.js').catch(err => {
+    navigator.serviceWorker.register('/sw.js').catch(err => {
       console.warn('[NextGen] Service worker registration failed:', err);
     });
   });

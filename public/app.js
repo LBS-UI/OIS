@@ -48,40 +48,60 @@ const notifications = {
 };
 
 /* ============================================================
-   NOTIFICATION SOUND — with candidate paths for filename variations
+   NOTIFICATION SOUND — existing public/sounds/Notification Sound.mp3
    ============================================================ */
-const NOTIFICATION_SOUND_CANDIDATES = [
-  '/sounds/Notification%20Sound.mp3',
-  '/sounds/notification.mp3'
-];
+const NOTIFICATION_SOUND_PATH = '/sounds/Notification%20Sound.mp3';
+const NOTIF_PREF_KEY = 'ng-browser-notif';
+const NOTIF_DEDUP_KEY = 'ng-notif-dedup';
+const SOUND_COOLDOWN_MS = 1800;
+
 const notificationSound = new Audio();
 notificationSound.volume = 0.6;
 notificationSound.preload = 'auto';
-(function tryNextSound(i) {
-  if (i >= NOTIFICATION_SOUND_CANDIDATES.length) {
-    console.warn('[NextGen] Notification sound not found at any candidate path.');
-    return;
+notificationSound.src = NOTIFICATION_SOUND_PATH;
+let lastSoundAt = 0;
+let soundLoadFailed = false;
+notificationSound.addEventListener('error', () => {
+  soundLoadFailed = true;
+  console.warn('[NextGen] Notification sound failed to load at', NOTIFICATION_SOUND_PATH);
+});
+
+function isSoundEnabled() {
+  try {
+    const v = localStorage.getItem(SOUND_PREF_KEY);
+    // Default on unless explicitly disabled
+    return v !== '0';
+  } catch {
+    return true;
   }
-  notificationSound.src = NOTIFICATION_SOUND_CANDIDATES[i];
-  notificationSound.load();
-  notificationSound.addEventListener('error', () => tryNextSound(i + 1), { once: true });
-})(0);
+}
+
+function setSoundEnabled(on) {
+  try { localStorage.setItem(SOUND_PREF_KEY, on ? '1' : '0'); } catch {}
+  const toggle = document.getElementById('notifSoundToggle');
+  if (toggle) toggle.checked = !!on;
+  const btn = document.getElementById('enableSoundBtn');
+  if (btn) btn.textContent = on ? '🔔 Notification Sounds Enabled' : '🔕 Enable sound';
+}
 
 async function playNotificationSound() {
+  if (!isSoundEnabled()) return;
+  if (soundLoadFailed) return;
+  const now = Date.now();
+  if (now - lastSoundAt < SOUND_COOLDOWN_MS) return; // debounce duplicates
+  lastSoundAt = now;
   try {
     notificationSound.currentTime = 0;
     await notificationSound.play();
   } catch (error) {
-    console.warn('Notification sound could not play:', error);
+    // Common when tab is backgrounded or autoplay policy blocks audio
+    console.warn('Notification sound could not play:', error && error.message ? error.message : error);
   }
 }
 
-// Restore enabled state and button label from previous session
+// Restore sound preference UI
 try {
-  if (localStorage.getItem(SOUND_PREF_KEY) === '1') {
-    const btn = document.getElementById('enableSoundBtn');
-    if (btn) btn.textContent = '🔔 Notification Sounds Enabled';
-  }
+  setSoundEnabled(isSoundEnabled());
 } catch {}
 
 document.getElementById('enableSoundBtn')?.addEventListener('click', async () => {
@@ -90,10 +110,11 @@ document.getElementById('enableSoundBtn')?.addEventListener('click', async () =>
     await notificationSound.play();
     notificationSound.pause();
     notificationSound.currentTime = 0;
-    document.getElementById('enableSoundBtn').textContent = '🔔 Notification Sounds Enabled';
-    try { localStorage.setItem(SOUND_PREF_KEY, '1'); } catch {}
+    setSoundEnabled(true);
+    toast('Notification sound enabled');
   } catch (error) {
     console.error('Could not enable sound:', error);
+    toast('Could not unlock sound — interact with the page and try again');
   }
 });
 
@@ -499,6 +520,7 @@ async function loadRecords(opts = {}) {
     renderRecords();
     renderHome();
     updateRecordsUpdatedIndicator();
+    try { observeRecordsForLocalNotifs(state.records); } catch (_) {}
   } catch (e) {
     if (e.status === 401) { return; } // public visitors don't need records access
     state.apiReady = false;
@@ -1679,7 +1701,11 @@ function onAuthenticated() {
   n.state.seenIds = new Set();
   n.state.firstFetchDone = false;
   if (n.els.markAll) n.els.markAll.hidden = false;
+  // Reset local-notif baseline so existing records don't fire as "new"
+  localNotif.baselineReady = false;
+  localNotif.lastRecordIds = new Set();
   refreshNotifications();
+  updateNotifSettingsUI();
 }
 
 function onLoggedOut() {
@@ -1699,8 +1725,11 @@ function onLoggedOut() {
   n.els.panel?.classList.add('hidden');
   n.els.btn?.setAttribute('aria-expanded', 'false');
   if (n.els.markAll) n.els.markAll.hidden = false;
+  localNotif.baselineReady = false;
+  localNotif.lastRecordIds = new Set();
   renderNotifications();
   renderNotificationBadge();
+  updateNotifSettingsUI();
 }
 
 function isEndpointUnavailable(err) {
@@ -1754,6 +1783,15 @@ async function refreshNotifications() {
 
     if (n.state.firstFetchDone && hasNewUnread && n.state.authenticated) {
       playNotificationSound();
+      // Surface one local browser notification for server-side feed items (no PII)
+      const newest = n.state.items.find(item => item.id && !item.read && !previousIds.has(item.id));
+      if (newest) {
+        showLocalNotification(
+          'New alert',
+          (newest.message || 'You have a new notification').slice(0, 120),
+          { eventKey: 'feed:' + newest.id, tag: 'feed' }
+        );
+      }
     }
     n.state.firstFetchDone = true;
   } catch (err) {
@@ -1981,6 +2019,233 @@ function formatNotificationTime(iso) {
 bindNotificationElements();
 
 /* ============================================================
+   LOCAL BROWSER NOTIFICATIONS (Notifications API)
+   — Not Web Push: alerts only while this dashboard is active
+     or recently focused on this device.
+   ============================================================ */
+const localNotif = {
+  supported: typeof window !== 'undefined' && 'Notification' in window,
+  lastRecordIds: new Set(),
+  baselineReady: false
+};
+
+function loadDedupSet() {
+  try {
+    const raw = localStorage.getItem(NOTIF_DEDUP_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return new Set();
+    // Keep only recent entries (last ~200)
+    return new Set(arr.slice(-200));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDedupSet(set) {
+  try {
+    localStorage.setItem(NOTIF_DEDUP_KEY, JSON.stringify([...set].slice(-200)));
+  } catch {}
+}
+
+function wasNotified(eventKey) {
+  const set = loadDedupSet();
+  return set.has(eventKey);
+}
+
+function markNotified(eventKey) {
+  const set = loadDedupSet();
+  set.add(eventKey);
+  saveDedupSet(set);
+}
+
+function browserNotifPermission() {
+  if (!localNotif.supported) return 'unsupported';
+  return Notification.permission; // 'granted' | 'denied' | 'default'
+}
+
+function updateNotifSettingsUI() {
+  const statusEl = $('#notifPermStatus');
+  const helpEl = $('#notifPermHelp');
+  const enableBtn = $('#enableBrowserNotifBtn');
+  const perm = browserNotifPermission();
+
+  if (statusEl) {
+    if (perm === 'unsupported') statusEl.textContent = 'Not supported in this browser';
+    else if (perm === 'granted') statusEl.textContent = 'Enabled — local alerts allowed';
+    else if (perm === 'denied') statusEl.textContent = 'Blocked — enable in browser site settings';
+    else statusEl.textContent = 'Not enabled yet — click the button to request permission';
+  }
+  if (helpEl) helpEl.classList.toggle('hidden', perm !== 'denied');
+  if (enableBtn) {
+    enableBtn.disabled = perm === 'granted' || perm === 'unsupported';
+    enableBtn.textContent = perm === 'granted' ? 'Notifications enabled' : 'Enable notifications';
+  }
+  const soundToggle = $('#notifSoundToggle');
+  if (soundToggle) soundToggle.checked = isSoundEnabled();
+}
+
+async function requestBrowserNotificationPermission() {
+  if (!localNotif.supported) {
+    toast('Notifications are not supported in this browser');
+    updateNotifSettingsUI();
+    return;
+  }
+  if (Notification.permission === 'granted') {
+    updateNotifSettingsUI();
+    toast('Notifications are already enabled');
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    updateNotifSettingsUI();
+    toast('Permission was denied — use Chrome site settings to allow');
+    return;
+  }
+  // Only request after explicit user click
+  try {
+    const result = await Notification.requestPermission();
+    try { localStorage.setItem(NOTIF_PREF_KEY, result); } catch {}
+    updateNotifSettingsUI();
+    if (result === 'granted') toast('Browser notifications enabled on this device');
+    else if (result === 'denied') toast('Permission denied — you can change this in site settings');
+    else toast('Permission not granted');
+  } catch (err) {
+    toast('Could not request notification permission');
+  }
+}
+
+/**
+ * Show a local notification when permission is granted.
+ * Plays custom MP3 only while the page is visible (autoplay policy).
+ * Does not include private student details.
+ */
+async function showLocalNotification(title, body, options = {}) {
+  if (!notifications.state.authenticated) return; // staff only
+  if (!localNotif.supported) return;
+  if (Notification.permission !== 'granted') return;
+
+  const eventKey = options.eventKey || `${title}|${body}|${Date.now()}`;
+  if (options.eventKey && wasNotified(options.eventKey)) return;
+  if (options.eventKey) markNotified(options.eventKey);
+
+  // Custom sound while tab is active
+  if (!document.hidden) {
+    await playNotificationSound();
+  }
+
+  try {
+    const opts = {
+      body: body || '',
+      icon: '/nextgen.jpg',
+      badge: '/nextgen.jpg',
+      tag: options.tag || eventKey,
+      renotify: false,
+      requireInteraction: false,
+      data: { url: options.url || '/' }
+    };
+    // Prefer SW showNotification so click handling works even if page later closes
+    if (navigator.serviceWorker && navigator.serviceWorker.ready) {
+      const reg = await navigator.serviceWorker.ready;
+      await reg.showNotification(title, opts);
+    } else {
+      const n = new Notification(title, opts);
+      n.onclick = () => {
+        window.focus();
+        n.close();
+      };
+    }
+  } catch (err) {
+    console.warn('[NextGen] Local notification failed:', err && err.message ? err.message : err);
+  }
+}
+
+function notifyNewRecordDetected(record) {
+  if (!record || !record.id) return;
+  const cat = categoryNames[record.category] || 'Participant';
+  showLocalNotification(
+    'New registration',
+    `A new ${cat.toLowerCase()} record was added.`,
+    { eventKey: 'record-created:' + record.id, tag: 'record-created', url: '/#records' }
+  );
+}
+
+function notifySyncResult(syncedCount, failedCount) {
+  if (syncedCount > 0) {
+    showLocalNotification(
+      'Synchronization complete',
+      `${syncedCount} offline change${syncedCount === 1 ? '' : 's'} saved to the cloud.`,
+      { eventKey: 'sync-ok:' + Date.now() + ':' + syncedCount, tag: 'sync-ok' }
+    );
+  }
+  if (failedCount > 0 && syncedCount === 0) {
+    showLocalNotification(
+      'Synchronization failed',
+      'Pending changes remain local. Retry when the connection is stable.',
+      { eventKey: 'sync-fail:' + Date.now(), tag: 'sync-fail' }
+    );
+  }
+}
+
+/** After records load, detect newly appeared IDs (not present on previous baseline). */
+function observeRecordsForLocalNotifs(records) {
+  if (!Array.isArray(records)) return;
+  const current = new Set(records.map(r => r && r.id).filter(Boolean));
+  if (!localNotif.baselineReady) {
+    localNotif.lastRecordIds = current;
+    localNotif.baselineReady = true;
+    return;
+  }
+  for (const id of current) {
+    if (!localNotif.lastRecordIds.has(id)) {
+      const rec = records.find(r => r.id === id);
+      if (rec) notifyNewRecordDetected(rec);
+    }
+  }
+  localNotif.lastRecordIds = current;
+}
+
+function initLocalNotifSettings() {
+  updateNotifSettingsUI();
+  $('#enableBrowserNotifBtn')?.addEventListener('click', requestBrowserNotificationPermission);
+  $('#testBrowserNotifBtn')?.addEventListener('click', async () => {
+    if (browserNotifPermission() !== 'granted') {
+      toast('Enable notifications first');
+      return;
+    }
+    if (!notifications.state.authenticated) {
+      toast('Sign in as staff to test teacher notifications');
+      return;
+    }
+    await showLocalNotification(
+      'Test notification',
+      'Local Chrome notification is working on this device.',
+      { eventKey: 'test:' + Date.now(), tag: 'test' }
+    );
+    toast('Test notification sent');
+  });
+  $('#testNotifSoundBtn')?.addEventListener('click', async () => {
+    if (soundLoadFailed) {
+      toast('Sound file could not be loaded');
+      return;
+    }
+    // Temporarily allow play regardless of toggle for explicit test
+    const prev = isSoundEnabled();
+    try {
+      lastSoundAt = 0;
+      notificationSound.currentTime = 0;
+      await notificationSound.play();
+      toast(prev ? 'Playing notification sound' : 'Playing sound (toggle is off — this is a manual test)');
+    } catch (err) {
+      toast('Sound blocked by the browser — click again after interacting with the page');
+    }
+  });
+  $('#notifSoundToggle')?.addEventListener('change', (e) => {
+    setSoundEnabled(!!e.target.checked);
+    toast(e.target.checked ? 'Notification sound on' : 'Notification sound off');
+  });
+}
+
+/* ============================================================
    PC NUMBER LOOKUP & SCORE EDITING
    ============================================================ */
 let scoreEditRecord = null;
@@ -2174,6 +2439,8 @@ async function syncQueue() {
   }
   await refreshQueueUI();
 
+  let syncedCount = 0;
+  let failedCount = 0;
   try {
     const result = await api('/sync', { method: 'POST', body: JSON.stringify({ items: toSend }) });
     const byId = {};
@@ -2183,16 +2450,22 @@ async function syncQueue() {
       if (res && res.status === 'synced') {
         item.status = 'synced';
         item.lastError = null;
+        syncedCount++;
       } else if (res && res.status === 'conflict') {
         item.status = 'conflict';
         item.lastError = res.error || 'Conflict';
+        failedCount++;
       } else {
         item.status = 'failed';
         item.lastError = (res && res.error) || 'Sync failed';
+        failedCount++;
       }
       await OfflineDB.updateQueueItem(item);
     }
-    toast('Offline changes synchronized');
+    toast(syncedCount
+      ? `Offline changes synchronized (${syncedCount})`
+      : 'Sync finished with no confirmed saves');
+    try { notifySyncResult(syncedCount, failedCount); } catch (_) {}
     await loadRecords();
   } catch (err) {
     for (const item of toSend) {
@@ -2200,7 +2473,9 @@ async function syncQueue() {
       item.lastError = err.message || 'Network error';
       await OfflineDB.updateQueueItem(item);
     }
+    failedCount = toSend.length;
     toast('Sync failed — will retry when online');
+    try { notifySyncResult(0, failedCount); } catch (_) {}
   } finally {
     offlineSyncing = false;
     await refreshQueueUI();
@@ -2265,4 +2540,5 @@ document.addEventListener('DOMContentLoaded', () => {
     toast('Pending records exported');
   });
   refreshQueueUI();
+  initLocalNotifSettings();
 });

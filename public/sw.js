@@ -1,11 +1,14 @@
 /* NextGen Smart Classroom — app shell service worker */
-const CACHE = 'ngsc-shell-v1';
+const CACHE = 'ngsc-shell-v2';
 const SHELL = [
   '/',
   '/index.html',
   '/app.js',
+  '/offline-db.js',
   '/qrcode.min.js',
-  '/nextgen.jpg'
+  '/styles.css',
+  '/nextgen.jpg',
+  '/sounds/Notification%20Sound.mp3'
 ];
 
 self.addEventListener('install', (event) => {
@@ -51,5 +54,25 @@ self.addEventListener('fetch', (event) => {
       }
       return res;
     }).catch(() => cached))
+  );
+});
+
+// Focus or open the dashboard when a local notification is clicked
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const targetUrl = (event.notification.data && event.notification.data.url) || '/';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if ('focus' in client) {
+          client.focus();
+          if (client.navigate && targetUrl) {
+            try { client.navigate(targetUrl); } catch (_) {}
+          }
+          return;
+        }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
+    })
   );
 });
