@@ -185,6 +185,16 @@ async function requireUser(request, env) {
 }
 
 /** Dataset generation — bumped on permanent wipe so stale offline queues are rejected */
+async function ensureAppMetaTable(env) {
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS app_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+  ).run();
+}
+
 async function getDataGeneration(env) {
   try {
     const row = await env.DB.prepare(
@@ -194,7 +204,11 @@ async function getDataGeneration(env) {
       const n = parseInt(String(row.value), 10);
       return Number.isFinite(n) && n > 0 ? n : 1;
     }
-  } catch (_) { /* table may not exist yet */ }
+  } catch (_) {
+    try {
+      await ensureAppMetaTable(env);
+    } catch (__) { /* ignore */ }
+  }
   return 1;
 }
 
@@ -202,30 +216,36 @@ async function bumpDataGeneration(env) {
   const current = await getDataGeneration(env);
   const next = current + 1;
   const ts = now();
+  await ensureAppMetaTable(env);
+  // INSERT OR REPLACE avoids ON CONFLICT edge cases across D1 SQLite versions
+  await env.DB.prepare(
+    `INSERT OR REPLACE INTO app_meta (key, value, updated_at) VALUES ('data_generation', ?, ?)`
+  ).bind(String(next), ts).run();
+  return next;
+}
+
+async function writeAudit(env, { action, recordId, actor, details }) {
+  const id = uuid();
+  const ts = now();
+  // Prefer schema with details; fall back if column missing on older D1 DBs
   try {
     await env.DB.prepare(
-      `INSERT INTO app_meta (key, value, updated_at) VALUES ('data_generation', ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-    ).bind(String(next), ts).run();
-  } catch (e) {
-    // If app_meta missing, try create once then set
+      `INSERT INTO audit_logs (id, action, record_id, actor, details, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(id, action, recordId || null, actor, details != null ? JSON.stringify(details) : null, ts).run();
+    return id;
+  } catch (e1) {
     try {
       await env.DB.prepare(
-        `CREATE TABLE IF NOT EXISTS app_meta (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL,
-          updated_at TEXT NOT NULL
-        )`
-      ).run();
-      await env.DB.prepare(
-        `INSERT INTO app_meta (key, value, updated_at) VALUES ('data_generation', ?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-      ).bind(String(next), ts).run();
-    } catch (_) {
-      throw e;
+        `INSERT INTO audit_logs (id, action, record_id, actor, previous_pre_test, previous_post_test, new_pre_test, new_post_test, created_at)
+         VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)`
+      ).bind(id, action, recordId || null, actor, ts).run();
+      return id;
+    } catch (e2) {
+      console.error('[NextGen] audit write failed', action, String(e2 && e2.message ? e2.message : e2));
+      return null;
     }
   }
-  return next;
 }
 
 // In-memory lock to reduce concurrent wipe races on the same isolate
@@ -476,75 +496,111 @@ export default {
     // ---------- Permanent wipe of student/participant data (authenticated admin only) ----------
     // Scope is server-side allowlisted. Never deletes users or audit_logs.
     if (path === '/api/admin/wipe-data' && method === 'POST') {
+      const operationId = uuid();
       let body;
-      try { body = await bodyJson(request); } catch (e) { return fail(e.message); }
+      try { body = await bodyJson(request); } catch (e) {
+        return json({ error: e.message, code: 'INVALID_JSON', operationId }, 400);
+      }
 
       const phrase = String(body.confirmationPhrase || '').trim();
       if (phrase !== 'DELETE ALL DATA') {
-        return fail('Confirmation phrase does not match. Type DELETE ALL DATA exactly.', 400);
+        return json({
+          error: 'Confirmation phrase does not match. Type DELETE ALL DATA exactly.',
+          code: 'PHRASE_MISMATCH',
+          operationId,
+        }, 400);
       }
       if (body.permanent !== true) {
-        return fail('permanent: true is required for this operation.', 400);
+        return json({
+          error: 'permanent: true is required for this operation.',
+          code: 'PERMANENT_FLAG_REQUIRED',
+          operationId,
+        }, 400);
       }
 
-      // Server-side allowlist only — frontend cannot invent table names
       const ALLOWED_SCOPES = new Set(['records', 'scan_events']);
       const requested = Array.isArray(body.scopes) ? body.scopes.map((s) => String(s)) : ['records', 'scan_events'];
       const scopes = [...new Set(requested.filter((s) => ALLOWED_SCOPES.has(s)))];
       if (!scopes.length) {
-        return fail('No valid deletion scopes selected. Allowed: records, scan_events.');
+        return json({
+          error: 'No valid deletion scopes selected. Allowed: records, scan_events.',
+          code: 'INVALID_SCOPE',
+          operationId,
+        }, 400);
       }
 
       if (wipeInProgress) {
-        return fail('A wipe operation is already in progress. Wait for it to finish.', 409);
+        return json({
+          error: 'A wipe operation is already in progress. Wait for it to finish.',
+          code: 'WIPE_IN_PROGRESS',
+          operationId,
+        }, 409);
       }
       wipeInProgress = true;
 
       const ts = now();
       const counts = { records: 0, scan_events: 0 };
       let newGeneration = null;
+      let deletedOk = false;
 
       try {
-        // Count first for the audit / response
         try {
           const rc = await env.DB.prepare('SELECT COUNT(*) AS c FROM records').first();
           counts.records = Number(rc && rc.c) || 0;
-        } catch (_) {}
+        } catch (e) {
+          console.error('[NextGen] wipe count records', operationId, e && e.message);
+        }
         try {
           const sc = await env.DB.prepare('SELECT COUNT(*) AS c FROM scan_events').first();
           counts.scan_events = Number(sc && sc.c) || 0;
-        } catch (_) {}
+        } catch (e) {
+          console.error('[NextGen] wipe count scan_events', operationId, e && e.message);
+        }
 
-        // Delete in dependency-safe order. scan_events cascade from records when FK is on,
-        // but also clear explicitly if requested / if cascade is unavailable.
+        // Dependency-safe order: child scan_events first, then records
         if (scopes.includes('scan_events') || scopes.includes('records')) {
-          await env.DB.prepare('DELETE FROM scan_events').run();
+          try {
+            await env.DB.prepare('DELETE FROM scan_events').run();
+          } catch (e) {
+            const msg = String(e && e.message ? e.message : e);
+            console.error('[NextGen] wipe DELETE scan_events', operationId, msg);
+            // If table is missing, continue; if real error, abort before records delete
+            if (!/no such table/i.test(msg)) {
+              throw Object.assign(new Error('Failed to delete scan_events: ' + msg), { code: 'DELETE_SCAN_EVENTS' });
+            }
+          }
         }
         if (scopes.includes('records')) {
-          await env.DB.prepare('DELETE FROM records').run();
+          try {
+            await env.DB.prepare('DELETE FROM records').run();
+          } catch (e) {
+            const msg = String(e && e.message ? e.message : e);
+            console.error('[NextGen] wipe DELETE records', operationId, msg);
+            throw Object.assign(new Error('Failed to delete records: ' + msg), { code: 'DELETE_RECORDS' });
+          }
+        }
+        deletedOk = true;
+
+        // Generation bump is important for offline safety but must not flip a successful wipe to failure
+        try {
+          newGeneration = await bumpDataGeneration(env);
+        } catch (e) {
+          console.error('[NextGen] wipe bumpDataGeneration', operationId, e && e.message);
+          newGeneration = null;
         }
 
-        newGeneration = await bumpDataGeneration(env);
-
-        // Audit AFTER wipe so evidence of the operation is preserved
-        try {
-          await env.DB.prepare(
-            `INSERT INTO audit_logs (id, action, record_id, actor, details, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)`
-          ).bind(
-            uuid(),
-            'permanent_wipe',
-            null,
-            user,
-            JSON.stringify({
-              scopes,
-              countsBefore: counts,
-              dataGeneration: newGeneration,
-              result: 'success',
-            }),
-            ts
-          ).run();
-        } catch (_) { /* table may lack details column on old DBs */ }
+        await writeAudit(env, {
+          action: 'permanent_wipe',
+          recordId: null,
+          actor: user,
+          details: {
+            operationId,
+            scopes,
+            countsBefore: counts,
+            dataGeneration: newGeneration,
+            result: 'success',
+          },
+        });
 
         return json({
           ok: true,
@@ -554,23 +610,30 @@ export default {
           dataGeneration: newGeneration,
           actor: user,
           at: ts,
+          operationId,
           preserved: ['users', 'audit_logs', 'app_meta', 'staff credentials'],
+          warning: newGeneration == null
+            ? 'Records were deleted, but data_generation could not be updated. Run migration 002_app_meta.sql and retry is not required unless offline devices resync old data.'
+            : undefined,
         });
       } catch (e) {
-        try {
-          await env.DB.prepare(
-            `INSERT INTO audit_logs (id, action, record_id, actor, details, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)`
-          ).bind(
-            uuid(),
-            'permanent_wipe_failed',
-            null,
-            user,
-            JSON.stringify({ scopes, error: String(e && e.message ? e.message : e).slice(0, 300) }),
-            ts
-          ).run();
-        } catch (_) {}
-        return fail('Wipe failed. Data may be partially unchanged — check the dashboard and retry if needed.', 500);
+        const msg = String(e && e.message ? e.message : e);
+        const code = (e && e.code) || 'WIPE_FAILED';
+        console.error('[NextGen] wipe failed', operationId, code, msg);
+        await writeAudit(env, {
+          action: 'permanent_wipe_failed',
+          recordId: null,
+          actor: user,
+          details: { operationId, scopes, code, error: msg.slice(0, 400), deletedOk },
+        });
+        return json({
+          error: deletedOk
+            ? 'Records may already have been deleted, but the operation did not finish cleanly: ' + msg
+            : 'Wipe failed before data was confirmed deleted: ' + msg,
+          code,
+          operationId,
+          deletedOk,
+        }, 500);
       } finally {
         wipeInProgress = false;
       }

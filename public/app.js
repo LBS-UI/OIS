@@ -148,6 +148,9 @@ async function api(path, options = {}) {
     if (!res.ok) {
       const e = new Error(data.error || `Request failed (${res.status})`);
       e.status = res.status;
+      e.code = data.code || null;
+      e.operationId = data.operationId || null;
+      e.deletedOk = data.deletedOk;
       throw e;
     }
     return data;
@@ -2426,14 +2429,27 @@ async function executeWipe() {
 
   try {
     const clearLocal = !!$('#wipeClearLocalCheck')?.checked;
-    const result = await api('/admin/wipe-data', {
-      method: 'POST',
-      body: JSON.stringify({
-        confirmationPhrase: 'DELETE ALL DATA',
-        permanent: true,
-        scopes: ['records', 'scan_events'],
-      })
-    });
+    let result;
+    try {
+      result = await api('/admin/wipe-data', {
+        method: 'POST',
+        body: JSON.stringify({
+          confirmationPhrase: 'DELETE ALL DATA',
+          permanent: true,
+          scopes: ['records', 'scan_events'],
+        })
+      });
+    } catch (apiErr) {
+      // api() throws Error with .status; message is server error string
+      const parts = [
+        apiErr && apiErr.message ? apiErr.message : 'Server request failed',
+      ];
+      if (apiErr && apiErr.status) parts.push(`(HTTP ${apiErr.status})`);
+      // Surface structured fields when present on the Error (attached below if we enhance api)
+      if (apiErr && apiErr.code) parts.push(`[${apiErr.code}]`);
+      if (apiErr && apiErr.operationId) parts.push(`op ${apiErr.operationId}`);
+      throw new Error(parts.join(' '));
+    }
 
     if (!result || !result.ok) {
       throw new Error((result && result.error) || 'Wipe did not complete');
@@ -2462,7 +2478,9 @@ async function executeWipe() {
     const msg =
       `Permanent wipe completed by ${esc(result.actor || wipeActor)}. ` +
       `Removed approximately ${deleted.records ?? 0} registration record(s) and ${deleted.scan_events ?? 0} scan event(s). ` +
-      `Staff accounts and audit logs were preserved. Dataset generation is now ${result.dataGeneration ?? '—'}.`;
+      `Staff accounts and audit logs were preserved. Dataset generation is now ${result.dataGeneration ?? '—'}.` +
+      (result.operationId ? ` Operation ID: ${esc(result.operationId)}.` : '') +
+      (result.warning ? ` Note: ${esc(result.warning)}` : '');
     if (okEl) {
       okEl.innerHTML = msg;
       okEl.classList.remove('hidden');
@@ -2474,7 +2492,7 @@ async function executeWipe() {
       errEl.textContent = (err && err.message) ? err.message : String(err);
       errEl.classList.remove('hidden');
     }
-    toast('Wipe failed — data was not reported as deleted');
+    toast('Wipe failed — see the error details in the dialog');
     $('#wipeActions3')?.classList.remove('hidden');
     if (exec) exec.disabled = false;
   } finally {
