@@ -12,6 +12,13 @@ const state = {
   recordsLastFetched: 0
 };
 
+// Declared early: checkSession() → onAuthenticated() runs before later sections load
+const localNotif = {
+  supported: typeof window !== 'undefined' && 'Notification' in window,
+  lastRecordIds: new Set(),
+  baselineReady: false
+};
+
 const categoryNames = {student:'Student', employee:'Employee / Client', visitor:'Visitor'};
 const PAGE_SIZE = 10;
 const RECORDS_STALE_MS = 60000;
@@ -2022,13 +2029,8 @@ bindNotificationElements();
    LOCAL BROWSER NOTIFICATIONS (Notifications API)
    — Not Web Push: alerts only while this dashboard is active
      or recently focused on this device.
+   (localNotif state object is declared near the top of this file)
    ============================================================ */
-const localNotif = {
-  supported: typeof window !== 'undefined' && 'Notification' in window,
-  lastRecordIds: new Set(),
-  baselineReady: false
-};
-
 function loadDedupSet() {
   try {
     const raw = localStorage.getItem(NOTIF_DEDUP_KEY);
