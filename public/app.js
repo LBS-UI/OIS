@@ -7,6 +7,8 @@ const state = {
   editingId: null,
   currentQR: null,
   apiReady: false,
+  authenticated: false,
+  mode: null, // null | 'student' | 'teacher'
   recordPage: 1,
   hasLoadedOnce: false,
   recordsLastFetched: 0
@@ -18,6 +20,12 @@ const RECORDS_STALE_MS = 60000;
 const API_TIMEOUT_MS = 20000;
 const SOUND_PREF_KEY = 'ng-sound-enabled';
 const loginView = $('#loginView'), appView = $('#appView');
+
+// Bootstrap: hide app view until checkSession() determines auth state.
+// loginView starts hidden in HTML; reveal it immediately so the portal page
+// is the default for unauthenticated visitors.
+appView?.classList.add('hidden');
+loginView?.classList.remove('hidden');
 
 /* ============================================================
    NOTIFICATION SYSTEM — CONFIG + STATE
@@ -67,7 +75,6 @@ notificationSound.addEventListener('error', () => {
 function isSoundEnabled() {
   try {
     const v = localStorage.getItem(SOUND_PREF_KEY);
-    // Default on unless explicitly disabled
     return v !== '0';
   } catch {
     return true;
@@ -84,21 +91,17 @@ async function playNotificationSound() {
   if (!isSoundEnabled()) return;
   if (soundLoadFailed) return;
   const now = Date.now();
-  if (now - lastSoundAt < SOUND_COOLDOWN_MS) return; // debounce duplicates
+  if (now - lastSoundAt < SOUND_COOLDOWN_MS) return;
   lastSoundAt = now;
   try {
     notificationSound.currentTime = 0;
     await notificationSound.play();
   } catch (error) {
-    // Common when tab is backgrounded or autoplay policy blocks audio
     console.warn('Notification sound could not play:', error && error.message ? error.message : error);
   }
 }
 
-// Restore sound preference UI
-try {
-  setSoundEnabled(isSoundEnabled());
-} catch {}
+try { setSoundEnabled(isSoundEnabled()); } catch {}
 
 document.getElementById('enableSoundBtn')?.addEventListener('click', async () => {
   try {
@@ -204,43 +207,102 @@ function showLogin() {
 function showApp() {
   loginView?.classList.add('hidden');
   appView?.classList.remove('hidden');
-  $('#logoutBtn')?.classList.remove('hidden');
-  try { onAuthenticated(); } catch (e) { console.warn('[NextGen] onAuthenticated:', e); }
+  const inStudentMode = document.body.classList.contains('student-mode');
+  // Keep #logoutBtn visibility aligned with actual auth state so the HTML's
+  // inline isAuthed check works correctly when leaving student mode.
+  if (state.authenticated) {
+    $('#logoutBtn')?.classList.remove('hidden');
+    if (!inStudentMode) {
+      try { onAuthenticated(); } catch (e) { console.warn('[NextGen] onAuthenticated:', e); }
+    }
+  } else {
+    $('#logoutBtn')?.classList.add('hidden');
+  }
 }
 
+/* ============================================================
+   PORTAL ENTRY POINTS — exposed globally for testing/future use.
+   NOTE: index.html's inline IIFE binds the actual [data-portal] clicks;
+   these globals are NOT bound to those buttons to avoid duplicate handlers.
+   ============================================================ */
+function enterStudentMode() {
+  state.mode = 'student';
+  document.body.classList.add('student-mode');
+  showApp();
+  resetForm();
+  navigate('register');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function enterTeacherMode() {
+  state.mode = 'teacher';
+  document.body.classList.remove('student-mode');
+  if (state.authenticated) {
+    showApp();
+    navigate('home');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } else {
+    showLogin();
+    $('#staffAccess')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setTimeout(() => {
+      document.querySelector('#loginForm input[name="username"]')?.focus();
+    }, 500);
+  }
+}
+
+function returnToHome() {
+  state.mode = null;
+  document.body.classList.remove('student-mode');
+  showLogin();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+/* ============================================================
+   SESSION CHECK — auth-aware. Unauthenticated visitors see the
+   portal landing page, not the teacher dashboard.
+   ============================================================ */
 async function checkSession() {
+  // Both views start hidden; reveal the correct one below.
+  appView?.classList.add('hidden');
+  loginView?.classList.add('hidden');
+
   if (!navigator.onLine) {
     setConnection(false, 'Offline');
   } else {
     setConnection(false, 'Connecting…');
   }
 
-  showApp();
-  try { navigate('home'); } catch (e) { console.warn('[NextGen] navigate:', e); }
-
+  let authenticated = false;
   try {
     await api('/me');
+    authenticated = true;
+    state.authenticated = true;
     state.apiReady = true;
     setConnection(true, 'Cloud connected');
   } catch (e) {
+    state.authenticated = false;
     if (!navigator.onLine) {
       state.apiReady = false;
       setConnection(false, 'Offline');
     } else if (e && (e.status === 401 || e.status === 403)) {
       state.apiReady = true;
       setConnection(true, 'Open registration');
-      const logout = $('#logoutBtn');
-      if (logout) logout.classList.add('hidden');
     } else {
       state.apiReady = false;
       setConnection(false, 'API unavailable');
     }
   }
 
-  try {
-    await loadRecords();
-  } catch (e) {
-    console.warn('[NextGen] loadRecords:', e);
+  // Fresh page load: never restore student mode implicitly.
+  state.mode = null;
+  document.body.classList.remove('student-mode');
+
+  if (authenticated) {
+    showApp();
+    try { navigate('home'); } catch (e) { console.warn('[NextGen] navigate:', e); }
+    try { await loadRecords(); } catch (e) { console.warn('[NextGen] loadRecords:', e); }
+  } else {
+    showLogin();
   }
 }
 
@@ -250,6 +312,10 @@ function navigate(page) {
 
   const pages = ['home','register','records','scores','scan'];
   if (!pages.includes(page)) page = 'home';
+  // Student mode locks navigation to the registration page.
+  if (document.body.classList.contains('student-mode') && page !== 'register') {
+    page = 'register';
+  }
 
   $$('.page').forEach(el => el.classList.toggle('hidden', el.id !== `page-${page}`));
   $$('.nav-link[data-page]').forEach(el => el.classList.toggle('active', el.dataset.page === page));
@@ -299,11 +365,16 @@ $('#loginForm')?.addEventListener('submit', async e => {
     });
     if (msg) msg.textContent = '';
     state.apiReady = true;
+    state.authenticated = true;
+    state.mode = 'teacher';
+    document.body.classList.remove('student-mode');
     setConnection(true, 'Cloud connected');
     showApp();
+    navigate('home');
     await loadRecords();
     toast('Signed in successfully');
   } catch (err) {
+    state.authenticated = false;
     if (msg) msg.textContent = err.message === 'Failed to fetch'
       ? 'Cannot reach the Worker API. Check deployment setup.'
       : err.message;
@@ -312,9 +383,12 @@ $('#loginForm')?.addEventListener('submit', async e => {
 
 $('#logoutBtn')?.addEventListener('click', async () => {
   try { await api('/logout', { method: 'POST' }); } catch {}
+  state.authenticated = false;
   state.records = [];
   state.hasLoadedOnce = false;
   state.recordsLastFetched = 0;
+  state.mode = null;
+  document.body.classList.remove('student-mode');
   resetRecordsView();
   showLogin();
   toast('Signed out');
@@ -374,8 +448,17 @@ function readRecordForm() {
   };
 }
 
+// Guard against duplicate submissions (Enter key while request is in flight).
+let registrationSubmitting = false;
+
 $('#recordForm')?.addEventListener('submit', async e => {
   e.preventDefault();
+
+  if (registrationSubmitting) {
+    console.log('[NextGen] Ignoring duplicate registration submit');
+    return;
+  }
+
   const msg = $('#formMessage');
   const data = readRecordForm();
 
@@ -391,9 +474,10 @@ $('#recordForm')?.addEventListener('submit', async e => {
     return;
   }
 
+  registrationSubmitting = true;
   const btn = $('#saveBtn');
   if (btn) btn.disabled = true;
-  if (msg) msg.textContent = 'Saving to cloud…';
+  if (msg) { msg.textContent = 'Saving to cloud…'; msg.className = 'form-message'; }
 
   try {
     const result = state.editingId
@@ -407,12 +491,17 @@ $('#recordForm')?.addEventListener('submit', async e => {
     if (btn) btn.innerHTML = 'Save changes <span>→</span>';
     await loadRecords();
     toast('Registration saved to cloud');
-    refreshNotifications();
+    // Only refresh notifications if the user is actually authenticated.
+    if (state.authenticated) refreshNotifications();
   } catch (err) {
-    if (msg) msg.textContent = err.message === 'Failed to fetch'
-      ? 'Could not reach the database API. Check the Cloudflare Worker setup.'
-      : err.message;
+    if (msg) {
+      msg.textContent = err.message === 'Failed to fetch'
+        ? 'Could not reach the database API. Check the Cloudflare Worker setup.'
+        : err.message;
+      msg.className = 'form-message';
+    }
   } finally {
+    registrationSubmitting = false;
     if (btn) btn.disabled = false;
   }
 });
@@ -1131,7 +1220,6 @@ function buildCsvBlob(rows) {
 
 /* ============================================================
    EXPORT LIBRARIES — lazy loading with clear failures
-   Self-host by pointing these at /vendor/*.js to remove the CDN dependency.
    ============================================================ */
 const EXPORT_LIB_URLS = {
   xlsx:      'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
@@ -1529,8 +1617,6 @@ function showDeleteSignInPrompt(errEl) {
 }
 
 async function perRecordDelete(ids) {
-  // Fallback for deployments where bulk endpoints require auth but per-record DELETE is open.
-  // (This is a security gap on the Worker — see note at the bottom.)
   console.log('[NextGen delete] bulk endpoints refused auth — falling back to per-record DELETE ×', ids.length);
   let deleted = 0;
   const failures = [];
@@ -1570,12 +1656,11 @@ async function tryDeleteOnServer(ids) {
       lastErr = err;
       if (status === 401 || status === 403) { sawAuthError = true; continue; }
       if (status === 404 || status === 405 || status === 400 || status === 422) continue;
-      throw err; // 500 / timeout — don't keep hammering
+      throw err;
     }
   }
 
   if (sawAuthError) {
-    // Bulk routes are auth-gated. Try per-record DELETE before giving up.
     return await perRecordDelete(ids);
   }
   throw lastErr || new Error('No delete endpoint responded');
@@ -1592,7 +1677,6 @@ async function confirmArchiveAfterExport() {
 
   let phase = 'export';
   try {
-    /* ── Phase 1: Export ── */
     const { files, errors } = await generateExportFiles();
     if (errors.length || files.length !== exportSession.formats.length) {
       const detail = errors.map(e => `${e.format.toUpperCase()}: ${e.message}`).join('; ')
@@ -1603,7 +1687,6 @@ async function confirmArchiveAfterExport() {
     await packageOrDownload(files);
     setExportProgress(100, 'Files ready. Sending delete request to server…');
 
-    /* ── Phase 2: Delete (bulk first, per-record fallback) ── */
     phase = 'delete';
     const ids = toDelete.map(r => r.id);
     const { result, attempt } = await tryDeleteOnServer(ids);
@@ -1613,7 +1696,6 @@ async function confirmArchiveAfterExport() {
       ? ` (${result.failures.length} failed)` : '';
     console.log('[NextGen delete] server reported count:', count, 'via', attempt.label);
 
-    /* ── Phase 3: Verify ── */
     phase = 'verify';
     setExportProgress(100, 'Verifying with server…');
 
@@ -1650,7 +1732,6 @@ async function confirmArchiveAfterExport() {
       );
     }
 
-    /* ── Success ── */
     setExportProgress(100, `Permanently deleted ${count} record${count === 1 ? '' : 's'} (verified).`);
     toast(`Exported and permanently deleted ${count} record${count === 1 ? '' : 's'}`);
 
@@ -2781,7 +2862,10 @@ $('#wipeExecuteBtn')?.addEventListener('click', () => {
 });
 $('#wipeDoneBtn')?.addEventListener('click', closeWipeDialog);
 
-document.addEventListener('DOMContentLoaded', () => {
+/* ============================================================
+   OFFLINE PANEL + QUEUE BADGE — bind once, on DOM ready or immediately
+   ============================================================ */
+function bindOfflineHandlers() {
   $('#queueBadge')?.addEventListener('click', () => {
     $('#offlinePanel')?.classList.remove('hidden');
     refreshQueueUI();
@@ -2800,8 +2884,15 @@ document.addEventListener('DOMContentLoaded', () => {
     toast('Pending records exported');
   });
   refreshQueueUI();
-});
+}
 
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bindOfflineHandlers);
+} else {
+  bindOfflineHandlers();
+}
+
+// Start session + dashboard load after script initialization
 checkSession();
 
 setTimeout(() => { preloadExportLibs().catch(() => {}); }, 2000);
