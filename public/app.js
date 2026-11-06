@@ -12,13 +12,6 @@ const state = {
   recordsLastFetched: 0
 };
 
-// Declared early: checkSession() → onAuthenticated() runs before later sections load
-const localNotif = {
-  supported: typeof window !== 'undefined' && 'Notification' in window,
-  lastRecordIds: new Set(),
-  baselineReady: false
-};
-
 const categoryNames = {student:'Student', employee:'Employee / Client', visitor:'Visitor'};
 const PAGE_SIZE = 10;
 const RECORDS_STALE_MS = 60000;
@@ -58,8 +51,6 @@ const notifications = {
    NOTIFICATION SOUND — existing public/sounds/Notification Sound.mp3
    ============================================================ */
 const NOTIFICATION_SOUND_PATH = '/sounds/Notification%20Sound.mp3';
-const NOTIF_PREF_KEY = 'ng-browser-notif';
-const NOTIF_DEDUP_KEY = 'ng-notif-dedup';
 const SOUND_COOLDOWN_MS = 1800;
 
 const notificationSound = new Audio();
@@ -85,8 +76,6 @@ function isSoundEnabled() {
 
 function setSoundEnabled(on) {
   try { localStorage.setItem(SOUND_PREF_KEY, on ? '1' : '0'); } catch {}
-  const toggle = document.getElementById('notifSoundToggle');
-  if (toggle) toggle.checked = !!on;
   const btn = document.getElementById('enableSoundBtn');
   if (btn) btn.textContent = on ? '🔔 Notification Sounds Enabled' : '🔕 Enable sound';
 }
@@ -551,9 +540,6 @@ async function loadRecords(opts = {}) {
     renderRecords();
     renderHome(); // updates total / category counts (shows 0 when empty)
     updateRecordsUpdatedIndicator();
-    try { observeRecordsForLocalNotifs(state.records); } catch (err) {
-      console.warn('[NextGen] observeRecordsForLocalNotifs:', err);
-    }
   } catch (e) {
     if (e.status === 401) {
       // Session required for this filter view; still clear loading state and show zeros
@@ -1599,8 +1585,7 @@ $('#scanForm')?.addEventListener('submit', async e => {
 });
 
 updateCategoryFields();
-// NOTE: checkSession() is intentionally invoked at the end of this file
-// after all function declarations and localNotif setup are complete.
+// NOTE: checkSession() is invoked at the end of this file.
 
 /* ============================================================
    CAMERA SCANNER — with specific error guidance
@@ -1733,13 +1718,6 @@ function handleNotificationVisibility() {
   }
 }
 
-function resetLocalNotifBaseline() {
-  // localNotif is initialized at the top of this file; guard anyway so dashboard init never throws
-  if (typeof localNotif === 'undefined' || !localNotif) return;
-  localNotif.baselineReady = false;
-  localNotif.lastRecordIds = new Set();
-}
-
 function onAuthenticated() {
   const n = notifications;
   n.state.authenticated = true;
@@ -1749,10 +1727,7 @@ function onAuthenticated() {
   n.state.seenIds = new Set();
   n.state.firstFetchDone = false;
   if (n.els.markAll) n.els.markAll.hidden = false;
-  // Reset local-notif baseline so existing records don't fire as "new"
-  resetLocalNotifBaseline();
   try { refreshNotifications(); } catch (e) { console.warn('[NextGen] refreshNotifications:', e); }
-  try { updateNotifSettingsUI(); } catch (e) { console.warn('[NextGen] updateNotifSettingsUI:', e); }
 }
 
 function onLoggedOut() {
@@ -1772,10 +1747,8 @@ function onLoggedOut() {
   n.els.panel?.classList.add('hidden');
   n.els.btn?.setAttribute('aria-expanded', 'false');
   if (n.els.markAll) n.els.markAll.hidden = false;
-  resetLocalNotifBaseline();
   try { renderNotifications(); } catch (e) { console.warn('[NextGen] renderNotifications:', e); }
   try { renderNotificationBadge(); } catch (e) { console.warn('[NextGen] renderNotificationBadge:', e); }
-  try { updateNotifSettingsUI(); } catch (e) { console.warn('[NextGen] updateNotifSettingsUI:', e); }
 }
 
 function isEndpointUnavailable(err) {
@@ -1829,15 +1802,6 @@ async function refreshNotifications() {
 
     if (n.state.firstFetchDone && hasNewUnread && n.state.authenticated) {
       playNotificationSound();
-      // Surface one local browser notification for server-side feed items (no PII)
-      const newest = n.state.items.find(item => item.id && !item.read && !previousIds.has(item.id));
-      if (newest) {
-        showLocalNotification(
-          'New alert',
-          (newest.message || 'You have a new notification').slice(0, 120),
-          { eventKey: 'feed:' + newest.id, tag: 'feed' }
-        );
-      }
     }
     n.state.firstFetchDone = true;
   } catch (err) {
@@ -2065,228 +2029,6 @@ function formatNotificationTime(iso) {
 bindNotificationElements();
 
 /* ============================================================
-   LOCAL BROWSER NOTIFICATIONS (Notifications API)
-   — Not Web Push: alerts only while this dashboard is active
-     or recently focused on this device.
-   (localNotif state object is declared near the top of this file)
-   ============================================================ */
-function loadDedupSet() {
-  try {
-    const raw = localStorage.getItem(NOTIF_DEDUP_KEY);
-    if (!raw) return new Set();
-    const arr = JSON.parse(raw);
-    if (!Array.isArray(arr)) return new Set();
-    // Keep only recent entries (last ~200)
-    return new Set(arr.slice(-200));
-  } catch {
-    return new Set();
-  }
-}
-
-function saveDedupSet(set) {
-  try {
-    localStorage.setItem(NOTIF_DEDUP_KEY, JSON.stringify([...set].slice(-200)));
-  } catch {}
-}
-
-function wasNotified(eventKey) {
-  const set = loadDedupSet();
-  return set.has(eventKey);
-}
-
-function markNotified(eventKey) {
-  const set = loadDedupSet();
-  set.add(eventKey);
-  saveDedupSet(set);
-}
-
-function browserNotifPermission() {
-  if (!localNotif.supported) return 'unsupported';
-  return Notification.permission; // 'granted' | 'denied' | 'default'
-}
-
-function updateNotifSettingsUI() {
-  const statusEl = $('#notifPermStatus');
-  const helpEl = $('#notifPermHelp');
-  const enableBtn = $('#enableBrowserNotifBtn');
-  const perm = browserNotifPermission();
-
-  if (statusEl) {
-    if (perm === 'unsupported') statusEl.textContent = 'Not supported in this browser';
-    else if (perm === 'granted') statusEl.textContent = 'Enabled — local alerts allowed';
-    else if (perm === 'denied') statusEl.textContent = 'Blocked — enable in browser site settings';
-    else statusEl.textContent = 'Not enabled yet — click the button to request permission';
-  }
-  if (helpEl) helpEl.classList.toggle('hidden', perm !== 'denied');
-  if (enableBtn) {
-    enableBtn.disabled = perm === 'granted' || perm === 'unsupported';
-    enableBtn.textContent = perm === 'granted' ? 'Notifications enabled' : 'Enable notifications';
-  }
-  const soundToggle = $('#notifSoundToggle');
-  if (soundToggle) soundToggle.checked = isSoundEnabled();
-}
-
-async function requestBrowserNotificationPermission() {
-  if (!localNotif.supported) {
-    toast('Notifications are not supported in this browser');
-    updateNotifSettingsUI();
-    return;
-  }
-  if (Notification.permission === 'granted') {
-    updateNotifSettingsUI();
-    toast('Notifications are already enabled');
-    return;
-  }
-  if (Notification.permission === 'denied') {
-    updateNotifSettingsUI();
-    toast('Permission was denied — use Chrome site settings to allow');
-    return;
-  }
-  // Only request after explicit user click
-  try {
-    const result = await Notification.requestPermission();
-    try { localStorage.setItem(NOTIF_PREF_KEY, result); } catch {}
-    updateNotifSettingsUI();
-    if (result === 'granted') toast('Browser notifications enabled on this device');
-    else if (result === 'denied') toast('Permission denied — you can change this in site settings');
-    else toast('Permission not granted');
-  } catch (err) {
-    toast('Could not request notification permission');
-  }
-}
-
-/**
- * Show a local notification when permission is granted.
- * Plays custom MP3 only while the page is visible (autoplay policy).
- * Does not include private student details.
- */
-async function showLocalNotification(title, body, options = {}) {
-  if (!notifications.state.authenticated) return; // staff only
-  if (!localNotif.supported) return;
-  if (Notification.permission !== 'granted') return;
-
-  const eventKey = options.eventKey || `${title}|${body}|${Date.now()}`;
-  if (options.eventKey && wasNotified(options.eventKey)) return;
-  if (options.eventKey) markNotified(options.eventKey);
-
-  // Custom sound while tab is active
-  if (!document.hidden) {
-    await playNotificationSound();
-  }
-
-  try {
-    const opts = {
-      body: body || '',
-      icon: '/nextgen.jpg',
-      badge: '/nextgen.jpg',
-      tag: options.tag || eventKey,
-      renotify: false,
-      requireInteraction: false,
-      data: { url: options.url || '/' }
-    };
-    // Prefer SW showNotification so click handling works even if page later closes
-    if (navigator.serviceWorker && navigator.serviceWorker.ready) {
-      const reg = await navigator.serviceWorker.ready;
-      await reg.showNotification(title, opts);
-    } else {
-      const n = new Notification(title, opts);
-      n.onclick = () => {
-        window.focus();
-        n.close();
-      };
-    }
-  } catch (err) {
-    console.warn('[NextGen] Local notification failed:', err && err.message ? err.message : err);
-  }
-}
-
-function notifyNewRecordDetected(record) {
-  if (!record || !record.id) return;
-  const cat = categoryNames[record.category] || 'Participant';
-  showLocalNotification(
-    'New registration',
-    `A new ${cat.toLowerCase()} record was added.`,
-    { eventKey: 'record-created:' + record.id, tag: 'record-created', url: '/#records' }
-  );
-}
-
-function notifySyncResult(syncedCount, failedCount) {
-  if (syncedCount > 0) {
-    showLocalNotification(
-      'Synchronization complete',
-      `${syncedCount} offline change${syncedCount === 1 ? '' : 's'} saved to the cloud.`,
-      { eventKey: 'sync-ok:' + Date.now() + ':' + syncedCount, tag: 'sync-ok' }
-    );
-  }
-  if (failedCount > 0 && syncedCount === 0) {
-    showLocalNotification(
-      'Synchronization failed',
-      'Pending changes remain local. Retry when the connection is stable.',
-      { eventKey: 'sync-fail:' + Date.now(), tag: 'sync-fail' }
-    );
-  }
-}
-
-/** After records load, detect newly appeared IDs (not present on previous baseline). */
-function observeRecordsForLocalNotifs(records) {
-  if (!Array.isArray(records)) return;
-  const current = new Set(records.map(r => r && r.id).filter(Boolean));
-  if (!localNotif.baselineReady) {
-    localNotif.lastRecordIds = current;
-    localNotif.baselineReady = true;
-    return;
-  }
-  for (const id of current) {
-    if (!localNotif.lastRecordIds.has(id)) {
-      const rec = records.find(r => r.id === id);
-      if (rec) notifyNewRecordDetected(rec);
-    }
-  }
-  localNotif.lastRecordIds = current;
-}
-
-function initLocalNotifSettings() {
-  updateNotifSettingsUI();
-  $('#enableBrowserNotifBtn')?.addEventListener('click', requestBrowserNotificationPermission);
-  $('#testBrowserNotifBtn')?.addEventListener('click', async () => {
-    if (browserNotifPermission() !== 'granted') {
-      toast('Enable notifications first');
-      return;
-    }
-    if (!notifications.state.authenticated) {
-      toast('Sign in as staff to test teacher notifications');
-      return;
-    }
-    await showLocalNotification(
-      'Test notification',
-      'Local Chrome notification is working on this device.',
-      { eventKey: 'test:' + Date.now(), tag: 'test' }
-    );
-    toast('Test notification sent');
-  });
-  $('#testNotifSoundBtn')?.addEventListener('click', async () => {
-    if (soundLoadFailed) {
-      toast('Sound file could not be loaded');
-      return;
-    }
-    // Temporarily allow play regardless of toggle for explicit test
-    const prev = isSoundEnabled();
-    try {
-      lastSoundAt = 0;
-      notificationSound.currentTime = 0;
-      await notificationSound.play();
-      toast(prev ? 'Playing notification sound' : 'Playing sound (toggle is off — this is a manual test)');
-    } catch (err) {
-      toast('Sound blocked by the browser — click again after interacting with the page');
-    }
-  });
-  $('#notifSoundToggle')?.addEventListener('change', (e) => {
-    setSoundEnabled(!!e.target.checked);
-    toast(e.target.checked ? 'Notification sound on' : 'Notification sound off');
-  });
-}
-
-/* ============================================================
    PC NUMBER LOOKUP & SCORE EDITING
    ============================================================ */
 let scoreEditRecord = null;
@@ -2506,7 +2248,6 @@ async function syncQueue() {
     toast(syncedCount
       ? `Offline changes synchronized (${syncedCount})`
       : 'Sync finished with no confirmed saves');
-    try { notifySyncResult(syncedCount, failedCount); } catch (_) {}
     await loadRecords();
   } catch (err) {
     for (const item of toSend) {
@@ -2516,7 +2257,6 @@ async function syncQueue() {
     }
     failedCount = toSend.length;
     toast('Sync failed — will retry when online');
-    try { notifySyncResult(0, failedCount); } catch (_) {}
   } finally {
     offlineSyncing = false;
     await refreshQueueUI();
@@ -2581,9 +2321,7 @@ document.addEventListener('DOMContentLoaded', () => {
     toast('Pending records exported');
   });
   refreshQueueUI();
-  try { initLocalNotifSettings(); } catch (e) { console.warn('[NextGen] initLocalNotifSettings:', e); }
 });
 
-// Start session + dashboard load only after the full script has initialized
-// (avoids temporal-dead-zone access to localNotif / late-declared helpers).
+// Start session + dashboard load after script initialization
 checkSession();
