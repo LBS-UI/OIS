@@ -16,7 +16,7 @@ directory = "./public"
 binding = "ASSETS"
 
 [observability.logs]
-enabled = false
+enabled = true
 invocation_logs = true
 
 [[d1_databases]]
@@ -25,3 +25,4 @@ database_name = "nextgen-smart-classroom"
 # Replace with your real D1 database ID after creating it in the dashboard
 # or via: npx wrangler d1 create nextgen-smart-classroom
 database_id = "a7b82648-3af2-4a67-8125-c7edadedada8"
+migrations_dir = "migrations"
